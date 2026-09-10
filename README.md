@@ -6,6 +6,7 @@ PowerShell batch video renaming toolkit for Windows PS1 scripts, works with Emby
 
 ---
 
+```
 **基本界面——主菜单功能**
 
 ===============================
@@ -45,6 +46,7 @@ PowerShell batch video renaming toolkit for Windows PS1 scripts, works with Emby
 【任意键返回上级菜单】
 =================================
 "请按数字键选择："
+```
 
 ---
 
