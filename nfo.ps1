@@ -142,8 +142,8 @@ foreach($wi in $workItems){
     }
 }
 
-$saveLog = Get-SingleKey "`n是否保存本次处理日志？【y=保存，其他按键不保存日志】"
-if($saveLog -eq 'y'){
+$saveLog = Get-SingleKey "`n是否保存本次处理日志？【s=保存，其他按键不保存日志】"
+if($saveLog -eq 's'){
     $logLines | Out-File $logFile -Encoding utf8
     Write-Host "`n✅日志已保存：$logFile" -ForegroundColor Green
 }else{
