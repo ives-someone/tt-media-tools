@@ -1,0 +1,128 @@
+# TT‑media‑Tools
+PowerShell batch video renaming toolkit for Windows PS1 scripts, works with Emby/Jellyfin, supports sync‑editing nfo, poster and media accessory files, with handy standalone utilities.
+
+> Windows 批量视频重命名工具集，bat+ps1脚本，适配Emby/Jellyfin，可同步处理nfo、poster等媒体附属文件，附带独立小工具，兼容PowerShell 5.1
+> 📝 项目说明：本人非程序员，属于个人自用工具，全部脚本由豆包AI辅助编写，请操作前务必备份你的媒体文件。
+
+> ⚠️ **重要提示**
+> 部分NFO内部文本修改**没有撤销功能**，仅文件名支持 `u` 撤销；强烈建议优先使用 `s` 预览/导出日志确认，再执行 `y` 写入。
+
+---
+
+## 依赖说明
+### 需要 `ffprobe.exe` 的脚本（读取视频真实播放时长）
+- `time_add_end.ps1` — 时长追加到文件名末尾
+- `time_add_begin.ps1` — 时长放到文件名开头
+- `time_add_only.ps1` — 只用时长作为完整文件名
+
+`ffprobe` 属于 FFmpeg 套件，Windows 系统默认不带。满足下面任意一种条件即可正常工作：
+1. 将 `ffprobe.exe` 所在目录加入系统 `PATH` 环境变量
+2. 直接把 `ffprobe.exe` 复制放到本工具包同一文件夹内
+3. 建议先行安装完整 FFmpeg 套件
+
+找不到 `ffprobe` 时，以上三个脚本读取时长全部返回 `ERROR`，无法生成带时长的新文件名；
+其余清理、扩展名转换、汉字数字转换、nfo同步功能不受任何影响。
+
+### 完全不依赖 ffprobe，原生即可运行
+- `time_clr_auto.ps1`
+- `time_clr_end.ps1`
+- `time_clr_begin.ps1`
+- `ext_lower.ps1`
+- `cn_num2seq.ps1`
+- `nfo.ps1`
+
+---
+
+## 文件清单
+### BAT启动包装文件，双击即可调用对应ps1脚本
+- `tt.bat` — 主工具集入口，调用 `tt.ps1`
+- `rr.bat` — 保留原名，时长追加到文件名末尾 → `time_add_end.ps1`
+- `r2.bat` — 保留原名，时长放到文件名开头 → `time_add_begin.ps1`
+- `rrr.bat` — 丢弃原名，直接使用时长做文件名 → `time_add_only.ps1`
+- `nnn.bat` — 识别文件名内任意位置时间，清理其余内容 → `time_clr_auto.ps1`
+- `rrn.bat` — 清理文件名【开头】的时间标记 → `time_clr_end.ps1`
+- `r2n.bat` — 清理文件名【开头】的时间标记 → `time_clr_begin.ps1`
+- `le.bat` — 扩展名大写批量转为小写 → `ext_lower.ps1`
+- `zw.bat` — 汉字数字(一~十)转两位序号01‑10 → `cn_num2seq.ps1`
+
+### PowerShell核心脚本
+#### 1. 扫描视频读取真实时长，添加时长到文件名
+- `tt.ps1` — 主菜单调度程序，统一交互入口
+- `time_add_end.ps1` — 保留原名，时长追加到文件名末尾，例：`ABC.mp4` → `ABC 01m20s.mp4`
+- `time_add_begin.ps1` — 保留原名，时长放到文件名开头，例：`ABC.mp4` → `01m20s ABC.mp4`
+- `time_add_only.ps1` — 丢弃全部原文件名，只用视频时长做文件名；同名冲突自动追加`2/3/4`序号，例：`ABC.mp4` → `01m25s.mp4`；冲突 → `01m25s2.mp4`
+
+> 以上3个脚本：启动会弹出Emby附属菜单，可开启配图/nfo跟随改名；可选择是否改写nfo内部`<title>/<sorttitle>`
+
+#### 2. 清理文件名中已有的时间文本（仅解析文件名，**不读取视频**）
+- `time_clr_auto.ps1` — 识别文件名**任意位置**的时间，清除其余文本，仅保留时间做文件名
+- `time_clr_begin.ps1` — 仅识别**文件名开头**时间；清除其余文本，保留时间作为文件名
+- `time_clr_end.ps1` — 仅识别**文件名开头**时间；清除其余文本，保留时间作为文件名
+
+> `time_clr_begin` / `time_clr_end`：检测到配图/nfo附属文件时，会弹窗确认，需要手动按 `y` 确认才处理附属文件。
+> 全部支持Emby配图/nfo跟随重命名，支持NFO标签改写开关。
+
+#### 3. 独立辅助小工具
+- `ext_lower.ps1` — 文件扩展名大写转小写，例：`ABC.MP4` → `ABC.mp4`；只处理文件，不处理文件夹，**无撤销功能**。
+- `cn_num2seq.ps1` — 一级目录 文件+文件夹，汉字数字 一~十 → `01‑10`；支持 `u` 撤销。
+
+#### 4. NFO独立同步工具 `nfo.ps1`
+> 功能：同步视频‑同名nfo内部 `<title>` `<sorttitle>` = 视频的basename（不带扩展名）
+>
+> 规则：
+> 1. 只处理 `视频.mp4 ↔ 完全同名主nfo`；`‑poster`/`‑fanart`/`‑thumb`/`‑poster1`这类附属nfo自动跳过。
+> 2. 仅改写**已经存在的同行标签**；nfo内没有`<title>`/`<sorttitle>`标签，**不会自动新增标签**。
+> 3. `s`模式：只输出`nfo_sync_log_xxx.log`日志文件，**完全不修改nfo**，适合手动批量参考。
+> 4. `y`模式：实际改写nfo文本；处理结束后询问是否保存执行日志。
+>
+> ⚠️ **本脚本没有撤销功能！务必优先使用 s 预览**
+
+---
+
+## Emby / Jellyfin 附属文件支持
+改名脚本开启配图跟随之后，可以自动同步改名配套附属文件：
+
+支持后缀：`jpg jpeg png webp nfo`
+支持附属标记：`‑poster`、`‑fanart`、`‑cover`、`‑thumb`、`‑banner`、`‑clearart`、`‑clearlogo`、`‑logo`、`‑landscape`、`‑backdrop`、`‑disc`、`‑cdart`、`‑movie`、`‑default`，允许后面带数字如 `‑poster1`、`‑fanart2`。
+
+> 重要区分：
+> 1. **主nfo**（和视频basename完全同名，不带`‑xxx`后缀）：可以选择同步改写 `<title>` / `<sorttitle>`。
+> 2. `xxx‑poster.nfo` / `xxx‑fanart1.nfo` 这类附属nfo：只会修改文件名，**不会改动nfo内部xml内容**。
+> 3. NFO内部文本改写：**没有u撤销！只有日志记录修改前旧值；`u`撤销按键仅还原文件名**。
+
+---
+
+## 日志文件说明
+1. 改名类脚本：导出日志 `rename_backup_yyyyMMdd_HHmmss.txt`
+    - 记录：原名、新名、文件大小KB；开启NFO改写时附带NFO标签修改记录注释。
+2. `nfo.ps1`独立工具：输出 `nfo_sync_log_yyyyMMdd_HHmmss.log`
+    - `s`预览模式 / `y`执行模式均可选择输出；记录每个nfo修改前后title/sorttitle。
+
+---
+
+## 使用方法
+1. 建议整个工具包解压到**不含中文、不含空格的路径**，例如 `C:\BAT`；
+   可将该文件夹加入系统PATH，方便在任意目录直接调用bat。
+
+2. 进入你的媒体工作目录，在空白处右键打开PowerShell窗口（shift+右键 → 在此处打开PowerShell）。
+
+3. 两种使用方式：
+   - 方式A：PowerShell窗口输入tt打开主菜单，数字键选择功能，
+   - 方式B：PowerShell窗口输入rr、r2等子功能脚本对应bat直接运行。
+
+> 全部脚本为**单键操作，按对应按键直接执行，不需要回车**；操作注意不要误触按键。
+
+## ⚠️ 重要注意事项
+1. 批量重命名操作前，优先预览确认。
+   - ✅ 文件名支持 `u` 撤销；
+   - ❌ **NFO标签文本改写没有撤销能力，但支持保存日志留存旧值！**
+2. 所有bat、ps1脚本必须放在同一个文件夹，脚本使用相对路径调用，不要分散移动文件。
+3. 不建议直接在桌面运行，桌面特殊路径有可能引发异常。
+4. 工具**仅修改文件名，不会改动视频画面、编码、媒体内容**。
+5. 视频相关重命名脚本不会自动把扩展名转为小写，保留原扩展名大小写状态。
+6. 仅处理**当前一级目录，不会递归进入更深子文件夹**。
+
+---
+
+## License
+MIT
