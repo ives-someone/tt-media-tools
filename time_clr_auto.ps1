@@ -1,4 +1,4 @@
-﻿<#
+<#
 time_clr_auto.ps1
 规则：
 1. 在basename任意位置查找第一个时间串(XXhXXmXXs / XXmXXs)，原始文件名时间后允许带数字
