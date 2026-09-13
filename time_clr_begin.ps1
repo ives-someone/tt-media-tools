@@ -1,4 +1,4 @@
-﻿<#
+<#
 time_clr_begin.ps1 (原r2n.ps1)
 提取【文件名开头】的时间串(XXhXXmXXs / XXmXXs)，仅保留时间作为文件名
 更新：
