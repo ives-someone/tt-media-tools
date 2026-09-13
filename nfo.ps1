@@ -1,4 +1,4 @@
-﻿<#
+<#
 nfo.ps1
 功能：刷新与视频同名的nfo内部 <title> <sorttitle> = 视频basename(不带后缀)
 适配PowerShell 5.1
