@@ -1,4 +1,4 @@
-﻿<#
+<#
 time_add_begin.ps1
 功能：文件名【前置时长】：原文件 → 01m20s xxx.mp4
 新增：Emby配图/nfo跟随重命名交互开关，支持nfo<title>/<sorttitle>改写；nfo文本修改u不能撤销仅文件名可还原
