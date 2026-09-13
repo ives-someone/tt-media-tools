@@ -1,4 +1,4 @@
-﻿<#
+<#
 time_add_end.ps1
 功能：时长追加到文件名末尾：xxx.mp4 → xxx 01m20s.mp4
 新增：Emby配图/nfo跟随重命名交互开关，支持nfo<title>/<sorttitle>改写；nfo文本修改u不能撤销仅文件名可还原
