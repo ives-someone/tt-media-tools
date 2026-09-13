@@ -1,3 +1,5 @@
+子功能更新，README还没来得及改，对不上请见谅
+
 # TT‑media‑Tools
 PowerShell batch video renaming toolkit for Windows PS1 scripts, works with Emby/Jellyfin, supports sync‑editing nfo, poster and media accessory files, with handy standalone utilities.
 
