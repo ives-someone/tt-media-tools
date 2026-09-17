@@ -44,7 +44,7 @@ while ($true) {
     Write-Host "【3】 大写文件名扩展改成小写"        # ext_lower.ps1
     Write-Host "【4】 汉字数字重命名为01~10"         # cn_num2seq.ps1
     Write-Host "【5】 NFO同步：刷新同名nfo内部名称"  # nfo同步模块 nfo.ps1
-    Write-Host "【6】 查找最大体积/码率/分辨率文件并排序"   # max查找模块 max.ps1
+    Write-Host "【6】 TOP XX 的视频/文件查找和输出"  # maxm查找模块 maxm.ps1
     Write-Host "【7】 快捷方式路径批量替换"          # 快捷方式路径批量替换，暂不支持带emoji目标路径 rl.ps1
     Write-Host ""
     Write-Host "【Q】退出程序"
@@ -123,7 +123,7 @@ while ($true) {
         }
         "6" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "max.ps1")
+            & (Join-Path $ScriptDir "maxm.ps1")
         }
         "7" {
             Write-Host "`n`n"
@@ -136,4 +136,3 @@ while ($true) {
         }
     }
 }
-
