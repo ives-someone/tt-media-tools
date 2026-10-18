@@ -8,7 +8,10 @@ maxm_v3.ps1
 5. S/B 模式均支持 -MinBitrate 码率筛选
 6. Test-Path 全部用 -LiteralPath 防特殊字符
 7. >>> FIX: 所有 $sorted/$outputRows 强制 @() 物化，防止单条结果时 Count=$null 导致 txt 空行
-8. >>> FIX: 时长读取统一用 Get-Content -Raw，修复 BOM/编码导致 TryParse 全部失败的问题
+8. >>> FIX v5: 时长读取退回 cmd /c + noprint_wrappers=1:nokey=1 + 重定向文件方案
+    新增 Invoke-FfprobeDuration 函数，所有时长点（D模式预读/后置扫描/交互预读/交互后置）
+    统一用旧代码稳定调用方式，解决 nw=1:nk=1 + -- 分隔符 + RedirectStandardOutput
+    在部分 ffprobe 版本下静默失败导致时长全部读取失败的问题
 #>
 
 param(
@@ -97,12 +100,83 @@ function Get-AllFilteredFiles {
     return $fileList
 }
 
+# >>> FIX v5: 退回旧代码稳定方案 —— cmd /c + noprint_wrappers=1:nokey=1 + 重定向文件
+# 此函数专用于时长读取，不经过 -- 分隔符和 RedirectStandardOutput
+function Invoke-FfprobeDuration {
+    param(
+        [string]$FilePath,
+        [string]$OutFile
+    )
+    # 沿用旧代码能读出的方案：cmd /c ffprobe + 完整参数 + 重定向到文件
+    $arg = '/c ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "' + $FilePath + '" > "' + $OutFile + '"'
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "cmd.exe"
+    $psi.Arguments = $arg
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc.WaitForExit()
+    
+    $output = ""
+    if (Test-Path -LiteralPath $OutFile) {
+        $output = [System.IO.File]::ReadAllText($OutFile).Trim()
+    }
+    
+    return @{ ExitCode = $proc.ExitCode; Output = $output }
+}
+
+# >>> FIX v5: 保留旧接口兼容，元数据读取（码率/分辨率）继续用 RedirectStandardOutput，不动
+function Invoke-Ffprobe {
+    param(
+        [string]$Arguments,
+        [string]$OutFile
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = "ffprobe.exe"
+    $psi.Arguments = $Arguments
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $stdOut = $proc.StandardOutput.ReadToEnd()
+    $stdErr = $proc.StandardError.ReadToEnd()
+    $proc.WaitForExit()
+    
+    $output = if ($stdOut -and $stdOut.Trim() -match '\d') { $stdOut.Trim() } else { $stdErr.Trim() }
+    
+    if ($OutFile -and $output) {
+        [System.IO.File]::WriteAllText($OutFile, $output, [System.Text.Encoding]::UTF8)
+    }
+    
+    return @{ ExitCode = $proc.ExitCode; Output = $output }
+}
+
+# >>> FIX v5: 保留旧接口兼容，但时长读取不再走这里
+function Get-FfprobeArgs {
+    param(
+        [string]$FilePath,
+        [string]$ExtraArgs = ""
+    )
+    $esc = $FilePath -replace '(\\*)"', '$1$1\"'
+    $esc = $esc -replace '(\\+)$', '$1$1'
+    $quotedPath = '"' + $esc + '"'
+    
+    if ($ExtraArgs) {
+        return "$ExtraArgs -- $quotedPath"
+    } else {
+        return "-- $quotedPath"
+    }
+}
+
 # ====================== 非交互模式入口 ======================
 if ($Mode -ne "") {
     Write-Host ">>> 非交互模式：参数驱动" -ForegroundColor Cyan
     Write-Host ">>> Mode=$Mode Recurse=$($Recurse.IsPresent) Meta=$($Meta.IsPresent) BitrateThreshold=$BitrateThreshold MinBitrate=$MinBitrate MinHeight=$MinHeight MaxHeight=$MaxHeight" -ForegroundColor Gray
 
-    # ---- 参数校验 ----
     $scanRoot = if ($Path) { $Path } else { $PWD.Path.Trim() }
     $recurseParam = $Recurse.IsPresent
     $videoMode = -not $AllFiles.IsPresent
@@ -110,10 +184,9 @@ if ($Mode -ne "") {
     if ($sortMode -notin "S","B","R","D") { Write-Host "错误：Mode 必须是 S/B/R/D 之一" -ForegroundColor Red; exit 1 }
     $exportMeta = $Meta.IsPresent -or ($sortMode -in "B","R","D")
     $topCount = [Math]::Max(1, $Top)
-    # 兼容 -BitrateThreshold 和 -MinBitrate 两种写法
     $bitrateThresholdKbps = if ($MinBitrate -gt 0) { $MinBitrate } elseif ($BitrateThreshold -gt 0) { $BitrateThreshold } else { 0 }
     $useBitrateFilter = ($bitrateThresholdKbps -gt 0)
-    $maxConcurrent = 4; $progressStep = 20; $maxNullBitrateItem = 200; $bitrateFilterMaxOutput = 500
+    $maxConcurrent = 4; $progressStep = 20
 
     if ($exportMeta -and -not (Test-FfprobeAvailable)) {
         Write-Host "错误：需要 ffprobe 但未找到，请安装后重试" -ForegroundColor Red; exit 1
@@ -125,7 +198,6 @@ if ($Mode -ne "") {
     Write-Host "输出条数：$topCount"
     Write-Host ""
 
-    # ---- 黑名单 ----
     $scanBlackList = @()
     $blacklistFile = Join-Path $scanRoot "blacklist.txt"
     if (Test-Path -LiteralPath $blacklistFile) {
@@ -133,7 +205,6 @@ if ($Mode -ne "") {
         Write-Host ">> 已加载黑名单：$($scanBlackList -join ' | ')"
     }
 
-    # ---- 扫描文件 ----
     $accessDeniedDirs = @(); $scanErrors = @()
     $rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors)
     $videoExts = @('.mp4','.mov','.mkv','.avi','.flv','.wmv','.m4v','.ts','.mpg','.mpeg','.f4v','.m2ts','.mts','.webm','.rmvb')
@@ -143,8 +214,8 @@ if ($Mode -ne "") {
     $totalVideoCount = $rawFiles.Count
     Write-Host "扫描到 $totalVideoCount 个文件，开始处理..."
 
-    # ---- 元数据读取 ----
     $workList = @(); $metaFail = 0; $durMap = @{}
+    
     if ($videoMode -and $exportMeta) {
         Write-Host "【读取视频元数据】"
         $tempDir = Join-Path $env:TEMP "video_meta_$(Get-Random)"
@@ -153,9 +224,15 @@ if ($Mode -ne "") {
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outPath = Join-Path $tempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $arg = '/c ffprobe.exe -v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json "' + $f.FullName + '" > "' + $outPath + '"'
+            # 元数据读取（码率/分辨率）继续用旧方式，不动
+            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json'
+            $args2 = Get-FfprobeArgs -FilePath $f.FullName -ExtraArgs $extraArgs
             $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = "cmd.exe"; $psi.Arguments = $arg; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+            $psi.FileName = "ffprobe.exe"
+            $psi.Arguments = $args2
+            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $proc = [System.Diagnostics.Process]::Start($psi)
             $taskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outPath }
         }
@@ -167,9 +244,10 @@ if ($Mode -ne "") {
                 $processedCount++
                 if($processedCount % $progressStep -eq 0){ Write-Host "已处理：$processedCount / $totalVideoCount" }
                 $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null}
-                if (Test-Path -LiteralPath $t.OutFile -PathType Leaf) {
+                if ($t.Proc.ExitCode -eq 0) {
                     try {
-                        $rawTxt = [System.IO.File]::ReadAllText($t.OutFile)
+                        $rawTxt = $t.Proc.StandardOutput.ReadToEnd()
+                        if (-not $rawTxt) { $rawTxt = [System.IO.File]::ReadAllText($t.OutFile) }
                         $jsonObj = $rawTxt | ConvertFrom-Json
                         $vStream = $jsonObj.streams[0]
                         $w=[int]$vStream.width; $h=[int]$vStream.height
@@ -204,22 +282,16 @@ if ($Mode -ne "") {
         }
     }
 
-    # ---- 体积前N筛选 ----
     if ($SizeTop) {
         $sizeTopCount = [Math]::Max(1, $SizeTopCount)
         $workList = @($workList | Sort-Object FileSizeBytes -Descending | Select-Object -First $sizeTopCount)
-        Write-Host "体积筛选：取体积最大前 $sizeTopCount 个，剩余 $($workList.Count) 个进入后续排序" -ForegroundColor Cyan
     }
 
-    # ---- 分辨率筛选 ----
     if ($MinHeight -gt 0 -or $MaxHeight -gt 0) {
-        $beforeCount = $workList.Count
         if ($MinHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -ge $MinHeight }) }
         if ($MaxHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -le $MaxHeight }) }
-        Write-Host "分辨率筛选：从 $beforeCount 条过滤到 $($workList.Count) 条（高度 $MinHeight ~ $MaxHeight）"
     }
 
-    # ---- 排序 + 筛选 ----
     if ($sortMode -eq "B") {
         $sortedAll = @($workList | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}, @{E={$_.FileSizeBytes};D=$true})
         if ($useBitrateFilter) { $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
@@ -229,71 +301,44 @@ if ($Mode -ne "") {
     } elseif ($sortMode -eq "D") {
         Write-Host "【D模式：扫描时长】"
         $durTempDir = Join-Path $env:TEMP "dur_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        $durTaskList = @()
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outFile = Join-Path $durTempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $arg = '/c ffprobe.exe -v error -show_entries format=duration -of default:noprint_wrappers=1:nokey=1 "' + $f.FullName + '" > "' + $outFile + '"'
-            $psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName="cmd.exe"; $psi.Arguments=$arg; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $durTaskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outFile }
-        }
-        while($durTaskList.Count -gt 0){
-            $run=@()
-            foreach($t in $durTaskList){
-                if(-not $t.Proc.HasExited){$run+=$t;continue}
-                # >>> FIX #8: 用 Get-Content -Raw 替代 ReadAllText，修复 BOM/编码导致解析失败
-                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
-                $sec = $null
-                if($txt -match '^\s*[\d\.]+'){
-                    try { $sec = [double]$txt } catch {}
-                }
-                $durMap[$t.File.FullName] = $sec
-            }
-            $durTaskList=$run; Start-Sleep -Milliseconds 40
+            # >>> FIX v5: 退回 cmd /c + noprint_wrappers=1:nokey=1 稳定方案
+            $result = Invoke-FfprobeDuration -FilePath $f.FullName -OutFile $outFile
+            $txt = $result.Output
+            $sec = $null
+            $tmp = 0.0
+            if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
+            $durMap[$f.FullName] = $sec
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
         $sorted = @($workList | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{-1}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
     } else {
-        # >>> FIX: S模式强制物化 + 码率筛选
         $sortedAll = @($workList | Sort-Object FileSizeBytes -Descending)
         if ($useBitrateFilter) {
             $sortedAll = @($sortedAll | Where-Object { $_.BitrateKbps -ne $null -and $_.BitrateKbps -ge $bitrateThresholdKbps })
-            Write-Host "码率筛选：从 $($workList.Count) 条中筛选 >= $bitrateThresholdKbps kbps，剩余 $($sortedAll.Count) 条" -ForegroundColor Cyan
         }
         $sorted = @($sortedAll | Select-Object -First $topCount)
     }
 
-    # >>> FIX: 最终保险，强制数组
     $sorted = @($sorted)
 
     # ---- 后置时长扫描 ----
     if ($ScanDuration -and $sortMode -ne "D") {
         Write-Host "【后置时长扫描】"
         $durTempDir = Join-Path $env:TEMP "dur_post_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        $durTaskList = @()
         foreach ($item in $sorted) {
             $outFile = Join-Path $durTempDir "$(Get-Random).txt"
-            $arg = '/c ffprobe.exe -v error -show_entries format=duration -of default:noprint_wrappers=1:nokey=1 "' + $item.FullPath + '" > "' + $outFile + '"'
-            $psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName="cmd.exe"; $psi.Arguments=$arg; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $durTaskList += [PSCustomObject]@{ Item=$item; Proc=$proc; OutFile=$outFile }
-        }
-        while($durTaskList.Count -gt 0){
-            $run=@()
-            foreach($t in $durTaskList){
-                if(-not $t.Proc.HasExited){$run+=$t;continue}
-                # >>> FIX #8: 用 Get-Content -Raw
-                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
-                $sec = $null
-                if($txt -match '^\s*[\d\.]+'){
-                    try { $sec = [double]$txt } catch {}
-                }
-                $t.Item.DurationSec = $sec
-                $t.Item.DurationDisp = (Get-FriendlyDuration $sec)
-            }
-            $durTaskList=$run; Start-Sleep -Milliseconds 20
+            # >>> FIX v5: 退回稳定方案
+            $result = Invoke-FfprobeDuration -FilePath $item.FullPath -OutFile $outFile
+            $txt = $result.Output
+            $sec = $null
+            $tmp = 0.0
+            if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
+            $item.DurationSec = $sec
+            $item.DurationDisp = (Get-FriendlyDuration $sec)
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -310,7 +355,7 @@ if ($Mode -ne "") {
             Path = $item.FullPath
         }
     }
-    $outputRows = @($outputRows)  # >>> FIX: 强制物化
+    $outputRows = @($outputRows)
 
     if ($JsonOutput -or $Output -ne "") {
         $jsonText = $outputRows | ConvertTo-Json -Depth 3
@@ -327,17 +372,12 @@ if ($Mode -ne "") {
 
     # ========= 非交互模式：自动保存 txt =========
     if ($UserQuery -and $UserQuery.Trim() -ne "") {
-        $fnRaw = $UserQuery.Trim() `
-            -replace '[<>:"/\\|?*]','_' `
-            -replace '_+','_' `
-            -replace '^\s+|\s+$',''
+        $fnRaw = $UserQuery.Trim() -replace '[<>:"/\\|?*]','_' -replace '_+','_' -replace '^\s+|\s+$',''
     } else {
         $fnRaw = "视频筛选结果"
     }
-    
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $outName = "${fnRaw}_${ts}.txt"
-
     $lines = @()
     $lines += "非交互模式筛选结果"
     $lines += "查询：$($UserQuery.Trim())"
@@ -346,29 +386,21 @@ if ($Mode -ne "") {
     $lines += "时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     $lines += "总视频: $totalVideoCount | 筛选后: $($sorted.Length)"
     $lines += "--------------------------------------------------"
-    
     if ($videoMode -and $exportMeta) {
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
         $lines += "--------------------------------------------------"
-        $dataCount = 0
         for($i=0; $i -lt $sorted.Length; $i++){
             $item = $sorted[$i]
             $lines += ("[{0,-3}]|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f ($i+1),$item.DurationDisp,$item.FileSizeFriendly,$item.BitrateDisp,$item.ResDisp,$item.FullPath)
-            $dataCount++
         }
-        if ($dataCount -eq 0) { $lines += "[无符合条件的数据]" }
     } else {
         $lines += ("{0,-4}|{1,-10}|{2}" -f "序号","大小","完整路径")
         $lines += "--------------------------------------------------"
-        $dataCount = 0
         for($i=0; $i -lt $sorted.Length; $i++){
             $item = $sorted[$i]
             $lines += ("[{0,-3}]|{1,-10}|{2}" -f ($i+1),$item.FileSizeFriendly,$item.FullPath)
-            $dataCount++
         }
-        if ($dataCount -eq 0) { $lines += "[无符合条件的数据]" }
     }
-    
     $txtContent = $lines -join "`r`n"
     try {
         $txtContent | Out-File -LiteralPath $outName -Encoding UTF8
@@ -377,45 +409,22 @@ if ($Mode -ne "") {
         Write-Host "`n❌ 保存失败：$($_.Exception.Message)" -ForegroundColor Red
     }
 
-    if ($JsonOutput) {
-        $jsonName = "${fnRaw}_${ts}.json"
-        $jsonData = @()
-        foreach($item in $sorted){
-            $jsonData += [PSCustomObject]@{
-                序号 = ($jsonData.Count + 1)
-                时长 = $item.DurationDisp
-                大小 = $item.FileSizeFriendly
-                码率 = $item.BitrateDisp
-                分辨率 = $item.ResDisp
-                路径 = $item.FullPath
-            }
-        }
-        $jsonData | ConvertTo-Json -Depth 3 | Out-File -LiteralPath $jsonName -Encoding UTF8
-        Write-Host "✅ JSON 已保存：$PWD\$jsonName" -ForegroundColor Green
-    }
-
     Write-Host "`n非交互模式执行完毕。"
     exit 0
 }
 
-# ====================== 交互模式（完整嵌入） ======================
+# ====================== 交互模式 ======================
 
 $runningFfprobe = Get-Process -Name "ffprobe" -ErrorAction SilentlyContinue
 if ($runningFfprobe -and $runningFfprobe.Count -gt 0) {
     Write-Host "`n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Yellow
     Write-Host "⚠️ 检测到本机存在 $($runningFfprobe.Count) 个正在运行 ffprobe.exe 进程" -ForegroundColor Yellow
-    Write-Host "⚠️ 警告：无法区分是上一次脚本遗留僵尸进程，" -ForegroundColor Yellow
-    Write-Host "⚠️ 还是格式工厂 / QuickFFSync / 用户手动启动的转码任务！" -ForegroundColor Yellow
     Write-Host "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!`n" -ForegroundColor Yellow
     while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $cleanOpt = Wait-KeyPress -Prompt "【Y】全部终止本机所有ffprobe(高风险)；【N】保留进程继续运行(默认)"
     if ($cleanOpt -ieq "Y") {
-        Write-Host ">>> 正在终止全部 ffprobe.exe ..."
         $runningFfprobe | Stop-Process -Force -ErrorAction SilentlyContinue
         Write-Host ">>> 已执行终止操作`n"
-    }
-    else {
-        Write-Host ">>> 保留现有ffprobe进程，继续脚本`n"
     }
 }
 
@@ -427,91 +436,63 @@ trap {
     break
 }
 
-$maxConcurrent = 4
-$progressStep = 20
-$maxNullBitrateItem = 200
-$bitrateFilterMaxOutput = 500
+$maxConcurrent = 4; $progressStep = 20
 
 Write-Host "=============================================="
 Write-Host "查找视频/文件列表（S大小｜B码率｜R长边分辨率｜D视频时长）"
 Write-Host "=============================================="
-while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
 $recurseOpt = Wait-KeyPress -Prompt "`n是否扫描子文件夹？【Y】递归(默认) 【N】仅当前目录"
 $recurseParam = ($recurseOpt -ne "N")
 
-while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
 $videoModeOpt = Wait-KeyPress -Prompt "`n是否仅扫描视频文件？【Y】仅视频(默认) 【N】全部文件"
 $videoMode = ($videoModeOpt -ne "N")
 
 $videoExts = @('.mp4','.mov','.mkv','.avi','.flv','.wmv','.m4v','.ts','.mpg','.mpeg','.f4v','.m2ts','.mts','.webm','.rmvb')
-$sortMode = "S"
-$exportMeta = $false
-$isDowngrade = $false
+$sortMode = "S"; $exportMeta = $false; $isDowngrade = $false
 
 if ($videoMode) {
-    while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $sortOpt = Wait-KeyPress -Prompt "`n排序维度选择：【S】文件大小(默认) 【B】视频流码率 【R】视频长边分辨率 【D】视频时长"
     if ($sortOpt -in "S","B","R","D") { $sortMode = $sortOpt }
     if ($sortMode -eq "S") {
-        while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
-        $metaOpt = Wait-KeyPress -Prompt "`n是否读取视频元数据(码率及分辨率) ，读取的话耗时较久？【N】不读取(默认) 【Y】读取"
+        $metaOpt = Wait-KeyPress -Prompt "`n是否读取视频元数据？【N】不读取(默认) 【Y】读取"
         if ($metaOpt -eq "Y") { $exportMeta = $true }
     }
     elseif ($sortMode -in "B","R","D") {
         $exportMeta = $true
-        Write-Host "`n【提示】B/R/D排序必须读取视频流元数据，耗时较长，请等待。"
         if (-not (Test-FfprobeAvailable)) {
             Write-Host "`n【错误】未找到ffprobe.exe" -ForegroundColor Red
-            Write-Host "【Y】降级按文件大小排序，其他键退出"
-            $dgKey = Wait-KeyPress -Prompt "请按键："
-            if ($dgKey -eq "Y") { $sortMode = "S"; $exportMeta = $false; $isDowngrade = $true; Write-Host "✅降级成功，使用文件大小排序" }
+            $dgKey = Wait-KeyPress -Prompt "【Y】降级按文件大小排序，其他键退出"
+            if ($dgKey -eq "Y") { $sortMode = "S"; $exportMeta = $false; $isDowngrade = $true }
             else { exit }
         }
     }
-    if ($exportMeta -and (-not (Test-FfprobeAvailable))) {
-        Write-Host "`n【错误】需要ffprobe读取视频元数据，未找到程序" -ForegroundColor Red
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); exit
-    }
 }
 
-# >>> FIX: 交互模式 S 分支也支持码率阈值筛选
-$useBitrateFilter = $false
-$bitrateThresholdKbps = 10000
-$topCount = 100
-Write-Host "`n"
+$useBitrateFilter = $false; $bitrateThresholdKbps = 10000; $topCount = 100
 if ($videoMode -and $sortMode -eq "B") {
-    while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $brModeOpt = Wait-KeyPress -Prompt "码率筛选模式选择：【N】指定条目数量(默认) 【T】按码率阈值筛选"
     if ($brModeOpt -eq "T") {
         $useBitrateFilter = $true
-        while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
         $inputThr = Read-Host "输入最低码率阈值(kbps)，直接回车默认10000"
         if ([string]::IsNullOrWhiteSpace($inputThr) -or (-not [int]::TryParse($inputThr, [ref]$null))) { $bitrateThresholdKbps = 10000 }
         else { $bitrateThresholdKbps = [int]$inputThr }
-        Write-Host "✅筛选条件：仅保留码率 >= $bitrateThresholdKbps kbps 的视频"
     } else {
-        while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
         $inputCount = Read-Host "指定最大的输出统计条目数，直接回车默认100"
         if ([string]::IsNullOrWhiteSpace($inputCount) -or (-not [int]::TryParse($inputCount, [ref]$null))) { $topCount = 100 }
         else { $topCount = [Math]::Max(1, [int]$inputCount) }
     }
 } elseif ($videoMode -and $sortMode -eq "S" -and $exportMeta) {
-    while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $brModeOpt = Wait-KeyPress -Prompt "是否按码率阈值筛选？【N】不过滤(默认) 【T】按码率阈值筛选"
     if ($brModeOpt -eq "T") {
         $useBitrateFilter = $true
-        while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
         $inputThr = Read-Host "输入最低码率阈值(kbps)，直接回车默认10000"
         if ([string]::IsNullOrWhiteSpace($inputThr) -or (-not [int]::TryParse($inputThr, [ref]$null))) { $bitrateThresholdKbps = 10000 }
         else { $bitrateThresholdKbps = [int]$inputThr }
-        Write-Host "✅筛选条件：仅保留码率 >= $bitrateThresholdKbps kbps 的视频"
     }
-    while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $inputCount = Read-Host "指定最大的输出统计条目数，直接回车默认100"
     if ([string]::IsNullOrWhiteSpace($inputCount) -or (-not [int]::TryParse($inputCount, [ref]$null))) { $topCount = 100 }
     else { $topCount = [Math]::Max(1, [int]$inputCount) }
 } else {
-    while ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") }
     $inputCount = Read-Host "指定最大的输出统计条目数，直接回车默认100"
     if ([string]::IsNullOrWhiteSpace($inputCount) -or (-not [int]::TryParse($inputCount, [ref]$null))) { $topCount = 100 }
     else { $topCount = [Math]::Max(1, [int]$inputCount) }
@@ -519,33 +500,22 @@ if ($videoMode -and $sortMode -eq "B") {
 
 if ($videoMode) {
     $filterDesc = "仅视频文件"
-    if($sortMode -eq "B"){
-        if($useBitrateFilter){ $sortText = "视频流码率降序，筛选>=$bitrateThresholdKbps kbps，同码率按文件大小降序" }
-        else { $sortText = "视频流码率降序，同码率按文件大小降序" }
-    }elseif($sortMode -eq "R"){ $sortText = "视频长边分辨率降序，同分辨率按文件大小降序" }
-    elseif($sortMode -eq "D"){ $sortText = "视频时长降序，相同时长按文件大小降序" }
-    else{
-        if($useBitrateFilter){ $sortText = "文件大小降序，筛选码率>=$bitrateThresholdKbps kbps" }
-        else{ $sortText = if($exportMeta){"文件大小降序，附带视频元数据"}else{"文件大小降序，不读取元数据"} }
-    }
-    if ($isDowngrade) { $sortText = "【降级】$sortText" }
-} else {
-    $filterDesc = "全部文件"; $sortText = "文件大小降序"
-}
-if($useBitrateFilter){ $fullDesc = "过滤：$filterDesc | 排序：$sortText | 筛选码率>=$bitrateThresholdKbps kbps" }
-else { $fullDesc = "过滤：$filterDesc | 排序：$sortText | 取前$topCount" }
+    if($sortMode -eq "D"){ $sortText = "视频时长降序，相同时长按文件大小降序" }
+    elseif($sortMode -eq "B"){ $sortText = "视频流码率降序" }
+    elseif($sortMode -eq "R"){ $sortText = "视频长边分辨率降序" }
+    else{ $sortText = if($exportMeta){"文件大小降序，附带视频元数据"}else{"文件大小降序"} }
+} else { $filterDesc = "全部文件"; $sortText = "文件大小降序" }
 
 Write-Host "`n========================================"
 Write-Host "开始扫描"
-Write-Host $fullDesc
+Write-Host "过滤：$filterDesc | 排序：$sortText"
 Write-Host "=======================================`n"
 
 $scanRoot = $PWD.Path.Trim()
 $blacklistFile = Join-Path $scanRoot "blacklist.txt"
 if (Test-Path -LiteralPath $blacklistFile) {
     $scanBlackList = Get-Content -LiteralPath $blacklistFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and $_ -notmatch '^#' }
-    Write-Host ">> 已加载扫描根目录下黑名单配置：$($scanBlackList -join ' | ')"
-} else { $scanBlackList = @(); Write-Host ">> 未找到blacklist.txt，不启用目录黑名单过滤" }
+}
 
 $accessDeniedDirs = @(); $scanErrors = @()
 $rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors)
@@ -555,15 +525,22 @@ if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件，按任意键退出"; 
 $workList = @(); $metaFail = 0; $totalVideoCount = $rawFiles.Count; $durMap = @{}; $taskList = @()
 
 if ($videoMode -and $exportMeta) {
-    Write-Host "【批量读取视频流元数据（码率、分辨率）】`n"
+    Write-Host "【批量读取视频流元数据】`n"
     $tempDir = Join-Path $env:TEMP "video_meta_$(Get-Random)"
     try {
         New-Item -ItemType Directory -Path $tempDir | Out-Null
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outPath = Join-Path $tempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $arg = '/c ffprobe.exe -v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json "' + $f.FullName + '" > "' + $outPath + '"'
-            $psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName="cmd.exe"; $psi.Arguments=$arg; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
+            # 元数据读取（码率/分辨率）继续用旧方式，不动
+            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json'
+            $args2 = Get-FfprobeArgs -FilePath $f.FullName -ExtraArgs $extraArgs
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = "ffprobe.exe"
+            $psi.Arguments = $args2
+            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+            $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+            $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
             $proc = [System.Diagnostics.Process]::Start($psi)
             $taskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outPath }
         }
@@ -574,19 +551,20 @@ if ($videoMode -and $exportMeta) {
                 if (-not $t.Proc.HasExited) { $running += $t; continue }
                 $processedCount++
                 if($processedCount % $progressStep -eq 0){ Write-Host "已处理：$processedCount / $totalVideoCount" }
-                $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null;ExitCode=$t.Proc.ExitCode}
-                if (Test-Path -LiteralPath $t.OutFile -PathType Leaf) {
+                $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null}
+                if ($t.Proc.ExitCode -eq 0) {
                     try {
-                        $rawTxt = [System.IO.File]::ReadAllText($t.OutFile)
+                        $rawTxt = $t.Proc.StandardOutput.ReadToEnd()
+                        if (-not $rawTxt) { $rawTxt = [System.IO.File]::ReadAllText($t.OutFile) }
                         $jsonObj = $rawTxt | ConvertFrom-Json
                         $vStream = $jsonObj.streams[0]
                         $w=[int]$vStream.width; $h=[int]$vStream.height
-                        $bitrateBps = $null; $bitrateSource = "bitrate"
-                        if (-not [string]::IsNullOrWhiteSpace($vStream.bit_rate)) { $bitrateBps = [long]$vStream.bit_rate; $bitrateSource = "bitrate" }
-                        elseif (-not [string]::IsNullOrWhiteSpace($vStream.avg_bit_rate)) { $bitrateBps = [long]$vStream.avg_bit_rate; $bitrateSource = "avgbitrate" }
+                        $bitrateBps = $null
+                        if (-not [string]::IsNullOrWhiteSpace($vStream.bit_rate)) { $bitrateBps = [long]$vStream.bit_rate }
+                        elseif (-not [string]::IsNullOrWhiteSpace($vStream.avg_bit_rate)) { $bitrateBps = [long]$vStream.avg_bit_rate }
                         $vi = [PSCustomObject]@{
                             BitrateKbps=if($bitrateBps){[Math]::Round($bitrateBps/1000)}else{$null}
-                            BitrateSource=$bitrateSource; Width=$w; Height=$h; LongEdge=[Math]::Max($w,$h); ExitCode=$t.Proc.ExitCode
+                            BitrateSource="bitrate"; Width=$w; Height=$h; LongEdge=[Math]::Max($w,$h)
                         }
                     } catch { $metaFail++ }
                 } else { $metaFail++ }
@@ -607,53 +585,31 @@ if ($videoMode -and $exportMeta) {
     if($sortMode -eq "D"){
         Write-Host "`n【D模式：全局预读取全部视频时长】`n"
         $durTempDir = Join-Path $env:TEMP "dur_batch_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        $durTaskList=@()
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 80 }
             $outFile = Join-Path $durTempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $arg = '/c ffprobe.exe -v error -show_entries format=duration -of default:noprint_wrappers=1:nokey=1 "' + $f.FullName + '" > "' + $outFile + '"'
-            $psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName="cmd.exe"; $psi.Arguments=$arg; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $durTaskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outFile }
-        }
-        while($durTaskList.Count -gt 0){
-            $run=@()
-            foreach($t in $durTaskList){
-                if(-not $t.Proc.HasExited){$run+=$t;continue}
-                # >>> FIX #8: 用 Get-Content -Raw
-                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
-                $sec = $null
-                if($txt -match '^\s*[\d\.]+'){
-                    try { $sec = [double]$txt } catch {}
-                }
-                $durMap[$t.File.FullName] = $sec
-            }
-            $durTaskList=$run; Start-Sleep -Milliseconds 40
+            # >>> FIX v5: 退回 cmd /c + noprint_wrappers=1:nokey=1 稳定方案
+            $result = Invoke-FfprobeDuration -FilePath $f.FullName -OutFile $outFile
+            $txt = $result.Output
+            $sec = $null
+            $tmp = 0.0
+            if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
+            $durMap[$f.FullName] = $sec
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
     }
 } else {
     foreach ($f in $rawFiles) {
-        $workList += [PSCustomObject]@{
-            FullPath=$f.FullName.Trim(); FileSizeBytes=$f.Length; FileSizeFriendly=(Get-FriendlySize -Bytes $f.Length)
-            BitrateKbps=$null; BitrateDisp="-"; Width=$null; Height=$null; ResDisp="-"; LongEdge=$null; DurationSec=$null; DurationDisp="-"
-        }
+        $workList += [PSCustomObject]@{ FullPath=$f.FullName.Trim(); FileSizeBytes=$f.Length; FileSizeFriendly=(Get-FriendlySize -Bytes $f.Length); BitrateKbps=$null; BitrateDisp="-"; Width=$null; Height=$null; ResDisp="-"; LongEdge=$null; DurationSec=$null; DurationDisp="-" }
     }
 }
 
-# ---- 排序（交互模式） ----
-$validBitrateCount = 0
-$truncateWarnMsg = $null
-
+# ---- 排序 ----
 if ($videoMode -and $sortMode -eq "B") {
     $sortedAll = @($workList | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}, @{E={$_.FileSizeBytes};D=$true})
-    if($useBitrateFilter){
-        $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ne $null -and $_.BitrateKbps -ge $bitrateThresholdKbps })
-        $validBitrateCount = $sorted.Count
-    }else{
-        $sorted = @($sortedAll | Select-Object -First $topCount)
-    }
+    if($useBitrateFilter){ $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
+    else { $sorted = @($sortedAll | Select-Object -First $topCount) }
 }
 elseif ($videoMode -and $sortMode -eq "R") {
     $sorted = @($workList | Sort-Object @{E={if($_.LongEdge -eq $null){-1}else{$_.LongEdge}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
@@ -662,43 +618,25 @@ elseif ($videoMode -and $sortMode -eq "D") {
     $sorted = @($workList | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{-1}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
 }
 else {
-    # >>> FIX: S模式强制物化 + 码率筛选
     $sortedAll = @($workList | Sort-Object FileSizeBytes -Descending)
-    if ($useBitrateFilter) {
-        $sortedAll = @($sortedAll | Where-Object { $_.BitrateKbps -ne $null -and $_.BitrateKbps -ge $bitrateThresholdKbps })
-        $validBitrateCount = $sortedAll.Count
-        Write-Host "码率筛选：从 $($workList.Count) 条中筛选 >= $bitrateThresholdKbps kbps，剩余 $validBitrateCount 条" -ForegroundColor Cyan
-    }
+    if ($useBitrateFilter) { $sortedAll = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
     $sorted = @($sortedAll | Select-Object -First $topCount)
 }
-
-$sorted = @($sorted)  # >>> FIX: 最终保险
+$sorted = @($sorted)
 
 # ---- 预览 ----
 Write-Host "`n==================== 预览 ===================="
 $outputRows = @()
 for($i=0; $i -lt $sorted.Length; $i++){
-    $item = $sorted[$i]
-    $rank = $i+1
-    $outputRows += [PSCustomObject]@{
-        RankOrig=$rank; FileSizeFriendly=$item.FileSizeFriendly; BitrateDisp=$item.BitrateDisp
-        ResDisp=$item.ResDisp; FullPath=$item.FullPath; DurationSec=$item.DurationSec; DurationDisp=$item.DurationDisp
-    }
+    $item = $sorted[$i]; $rank = $i+1
+    $outputRows += [PSCustomObject]@{ RankOrig=$rank; DurationDisp=$item.DurationDisp; FileSizeFriendly=$item.FileSizeFriendly; BitrateDisp=$item.BitrateDisp; ResDisp=$item.ResDisp; FullPath=$item.FullPath }
     if ($videoMode -and $exportMeta) {
         Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f $rank,$item.DurationDisp,$item.FileSizeFriendly,$item.BitrateDisp,$item.ResDisp,$item.FullPath)
     } else {
         Write-Host ("[{0,3}] {1,-10} {2}" -f $rank,$item.FileSizeFriendly,$item.FullPath)
     }
 }
-$outputRows = @($outputRows)  # >>> FIX: 强制物化
-
-Write-Host "======================================================"
-Write-Host $fullDesc
-Write-Host "总扫描视频数量：$totalVideoCount"
-if($useBitrateFilter){ Write-Host "满足码率阈值条目数：$validBitrateCount" }
-if ($videoMode -and $exportMeta) { Write-Host "元数据读取失败数量：$metaFail" }
-if($truncateWarnMsg){ Write-Host $truncateWarnMsg }
-if($accessDeniedDirs.Count -gt 0){ Write-Host "无法访问目录共 $($accessDeniedDirs.Count) 个" }
+$outputRows = @($outputRows)
 
 # ---- 后置时长扫描 ----
 $doScanDuration = $false; $reSortKey = $null; $mergedList = $null
@@ -708,33 +646,20 @@ if($sortMode -ne "D"){
         $doScanDuration = $true
         Write-Host "`n===== 开始扫描本次结果集的视频时长 =====" -ForegroundColor Cyan
         $durTempDir = Join-Path $env:TEMP "dur_postscan_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        $durTaskList = @()
+        $durResultList = @()
         foreach ($rowItem in $sorted) {
             $outFile = Join-Path $durTempDir "$(Get-Random).txt"
-            $arg = '/c ffprobe.exe -v error -show_entries format=duration -of default:noprint_wrappers=1:nokey=1 "' + $rowItem.FullPath + '" > "' + $outFile + '"'
-            $psi = New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName="cmd.exe"; $psi.Arguments=$arg; $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $durTaskList += [PSCustomObject]@{ FullPath=$rowItem.FullPath; Proc=$proc; OutFile=$outFile; OrigItem=$rowItem }
-        }
-        $durResultList = @()
-        while ($durTaskList.Count -gt 0) {
-            $runDur = @()
-            foreach($dt in $durTaskList){
-                if(-not $dt.Proc.HasExited){$runDur+=$dt;continue}
-                # >>> FIX #8: 用 Get-Content -Raw
-                $c = Get-Content -LiteralPath $dt.OutFile -Raw -Encoding UTF8
-                $durSec = $null
-                if($c -match '^\s*[\d\.]+'){
-                    try { $durSec = [double]$c } catch {}
-                }
-                $dispTime = Get-FriendlyDuration $durSec
-                $durResultList += [PSCustomObject]@{ OrigItem=$dt.OrigItem; DurationSec=$durSec; DurationDisp=$dispTime }
-            }
-            $durTaskList = $runDur; Start-Sleep -Milliseconds 20
+            # >>> FIX v5: 退回稳定方案
+            $result = Invoke-FfprobeDuration -FilePath $rowItem.FullPath -OutFile $outFile
+            $c = $result.Output
+            $durSec = $null
+            $tmp = 0.0
+            if ([double]::TryParse($c, [ref]$tmp)) { $durSec = $tmp }
+            $durResultList += [PSCustomObject]@{ OrigItem=$rowItem; DurationSec=$durSec; DurationDisp=(Get-FriendlyDuration $durSec) }
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         $mergedList = @()
-        foreach($dr in $durResultList){ $src=$dr.OrigItem; $mergedList += [PSCustomObject]@{ RankOrig=0; DurationSec=$dr.DurationSec; DurationDisp=$dr.DurationDisp; FileSizeFriendly=$src.FileSizeFriendly; BitrateDisp=$src.BitrateDisp; ResDisp=$src.ResDisp; FullPath=$src.FullPath } }
+        foreach($dr in $durResultList){ $src=$dr.OrigItem; $mergedList += [PSCustomObject]@{ DurationSec=$dr.DurationSec; DurationDisp=$dr.DurationDisp; FileSizeFriendly=$src.FileSizeFriendly; BitrateDisp=$src.BitrateDisp; ResDisp=$src.ResDisp; FullPath=$src.FullPath } }
         $outputRows = @($mergedList)
         $reSortKey = Wait-KeyPress -Prompt "`n保存选择：【N】沿用原有排序(默认)；【Y】按时长降序重新排序"
         if($reSortKey -eq "Y"){ $outputRows = @($outputRows | Sort-Object @{E={if($_.DurationSec){$_.DurationSec}else{-1}};D=$true}) }
@@ -753,7 +678,6 @@ if ($saveKey -ne "N") {
     $lines += "#扫描根目录: $scanRoot"
     $lines += "#扫描时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     $lines += "#总扫描视频数量:$totalVideoCount"
-    if($useBitrateFilter){ $lines += "#满足码率阈值条目数:$validBitrateCount" }
     $lines += "#--------------------------------------------------"
     if($videoMode -and $exportMeta){
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
@@ -773,7 +697,7 @@ if ($saveKey -ne "N") {
     $txtContent = $lines -join "`r`n"
     try{ $txtContent | Out-File -LiteralPath $outName -Encoding UTF8; Write-Host "`n✅已保存：$PWD\$outName" -ForegroundColor Green }
     catch{ Write-Host "`n【错误】写入失败：$($_.Exception.Message)" -ForegroundColor Red }
-} else { Write-Host "`n❌跳过保存" -ForegroundColor Yellow }
+}
 
 Write-Host "`n任务完成，按任意键关闭窗口"
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
