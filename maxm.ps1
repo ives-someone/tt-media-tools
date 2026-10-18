@@ -8,58 +8,7 @@ maxm_v3.ps1
 5. S/B 模式均支持 -MinBitrate 码率筛选
 6. Test-Path 全部用 -LiteralPath 防特殊字符
 7. >>> FIX: 所有 $sorted/$outputRows 强制 @() 物化，防止单条结果时 Count=$null 导致 txt 空行
-
-保留原脚本交互式使用的同时，支持AI自然语言驱动，可非交互式使用
-
-将以下“自然语言 → maxm.ps1 参数映射 Prompt 模板”存成TXT喂给AI后，给出自己的需求，AI反馈相应筛查命令行，powershell复制执行即可
-
-你是一个命令行参数翻译器。
-请读取并锁定以下规则，等待用户后续输入具体需求（严禁主动翻译示例，当前处于【等待状态】，未收到需求前只回"已就绪，请提需求"）。
-用户的脚本 maxm.ps1 已加入 PATH，支持以下参数：
-## 参数说明
-- -Mode <char>            : 排序维度。S=文件大小降序, B=码率降序, R=分辨率(长边)降序, D=视频时长降序
-- -Path <string>          : 目标路径，不传则自动用当前目录（$PWD）
-- -Recurse                : 递归子目录
-- -Meta                   : 读取视频元数据（分辨率、码率等，耗时）
-- -Top <int>              : 最终输出前N个
-- -MinHeight <int>        : 最低高度筛选（默认0=不筛选）
-- -MaxHeight <int>        : 最高高度筛选（默认0=不筛选）
-- -MinBitrate <int>       : 最低码率阈值 kbps（默认0）。B模式主排序用；S模式下作为后置筛选条件（需配合-Meta读取码率）
-- -SizeTop                : 启用"先按体积初筛"模式
-- -SizeTopCount <int>     : 体积初筛取前N个（默认100）
-- -UserQuery <string>     : 用户原始自然语言需求（用于txt文件命名和记录）
-- -ScanDuration           : 后置扫描结果集的视频时长
-## 规则
-1. 用户不传 -Path 时，命令中不写 -Path（脚本自动用 $PWD）
-2. 文件名固定为 maxm.ps1，不加 .\
-3. 非交互模式：不询问用户，直接输出完整命令
-4. 参数顺序：先排序/筛选参数，后数量参数
-5. 如果用户说"码率最高/按码率排序"，对应 -Mode B
-6. 如果用户说"体积最大/文件最大/按大小排序/从大到小"，对应 -Mode S
-7. 如果用户说"分辨率最高/4K/1080p/720p"，对应 -Mode R 或配合 -MinHeight/-MaxHeight。"4K以下/低于4K" → -MaxHeight 2160（长边≤2160px 即包含1440p/1080p/720p等）
-8. 如果用户说"时长最长/按时长排序"，对应 -Mode D
-9. 如果用户说"先按体积取前N个再按XX排序"，对应 -SizeTop -SizeTopCount N（注意：这不是最终排序，只是初筛）
-10. 如果用户说"扫描时长/读取时长"，加上 -ScanDuration
-11. 【强制】每一次翻译输出【必须】附带 -UserQuery "用户原始需求原文"。无论需求多简单、多短，都不得省略。此参数用于txt文件命名和首行记录，省略将导致文件无法溯源。原文中的引号用单引号或转义。
-12. 除非用户明确说"不递归"/"仅当前目录"/"不扫描子目录"，否则命令中始终包含 -Recurse
-13. 如果用户描述中有矛盾（如说200个又说100个），以最后出现的数字为准，或询问用户
-14. S模式 + -MinBitrate 组合说明：当用户要求"按大小排序"且附带码率条件时，使用 -Mode S -Meta -MinBitrate <值>。脚本执行逻辑为：先按文件大小降序排列，再筛选码率≥阈值的条目，最后取 -Top N。此组合要求必须带 -Meta（否则无码率数据可筛）。
-## 输出格式
-只输出一行完整命令，不要解释。如果用户需求不明确，先输出命令再追加一行问句确认。
-## 示例
-用户：帮我找本文件夹里码率最高的20个视频
-输出：maxm.ps1 -Mode B -Meta -Top 20 -UserQuery "帮我找本文件夹里码率最高的20个视频"
-用户：递归找体积前100里分辨率最高的30个
-输出：maxm.ps1 -Mode R -Recurse -Meta -SizeTop -SizeTopCount 100 -Top 30 -UserQuery "递归找体积前100里分辨率最高的30个"
-用户：查找文件夹里720P码率大于5000K的视频，按文件从大到小排序
-输出：maxm.ps1 -Recurse -Mode S -Meta -MinHeight 720 -MaxHeight 720 -MinBitrate 5000 -UserQuery "查找文件夹里720P码率大于5000K的视频，按文件从大到小排序"
-用户：帮我找文件夹内720P分辨率视频码率大于8000k的，按文件大小降序排列
-输出：maxm.ps1 -Recurse -Mode S -Meta -MinHeight 720 -MaxHeight 720 -MinBitrate 8000 -UserQuery "帮我找文件夹内720P分辨率视频码率大于8000k的，按文件大小降序排列"
-用户：文件夹里4k以下分辨率里，码率最大的文件，按从大到小排列
-输出：maxm.ps1 -Recurse -Mode B -Meta -MaxHeight 2160 -UserQuery "文件夹里4k以下分辨率里，码率最大的文件，按从大到小排列"
----
-当前处于【等待需求】状态，未收到用户真实需求前，只回复"已就绪，请提需求"并输出此状态。
-
+8. >>> FIX: 时长读取统一用 Get-Content -Raw，修复 BOM/编码导致 TryParse 全部失败的问题
 #>
 
 param(
@@ -218,7 +167,6 @@ if ($Mode -ne "") {
                 $processedCount++
                 if($processedCount % $progressStep -eq 0){ Write-Host "已处理：$processedCount / $totalVideoCount" }
                 $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null}
-                # >>> FIX: -LiteralPath 防特殊字符
                 if (Test-Path -LiteralPath $t.OutFile -PathType Leaf) {
                     try {
                         $rawTxt = [System.IO.File]::ReadAllText($t.OutFile)
@@ -290,7 +238,20 @@ if ($Mode -ne "") {
             $proc = [System.Diagnostics.Process]::Start($psi)
             $durTaskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outFile }
         }
-        while($durTaskList.Count -gt 0){ $run=@(); foreach($t in $durTaskList){ if(-not $t.Proc.HasExited){$run+=$t;continue}; $txt=[System.IO.File]::ReadAllText($t.OutFile); $sec=$null; if($txt -match '^\s*[\d\.]+'){[double]::TryParse($txt,[ref]$sec)|Out-Null}; $durMap[$t.File.FullName]=$sec }; $durTaskList=$run; Start-Sleep -Milliseconds 40 }
+        while($durTaskList.Count -gt 0){
+            $run=@()
+            foreach($t in $durTaskList){
+                if(-not $t.Proc.HasExited){$run+=$t;continue}
+                # >>> FIX #8: 用 Get-Content -Raw 替代 ReadAllText，修复 BOM/编码导致解析失败
+                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
+                $sec = $null
+                if($txt -match '^\s*[\d\.]+'){
+                    try { $sec = [double]$txt } catch {}
+                }
+                $durMap[$t.File.FullName] = $sec
+            }
+            $durTaskList=$run; Start-Sleep -Milliseconds 40
+        }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
         $sorted = @($workList | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{-1}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
@@ -319,7 +280,21 @@ if ($Mode -ne "") {
             $proc = [System.Diagnostics.Process]::Start($psi)
             $durTaskList += [PSCustomObject]@{ Item=$item; Proc=$proc; OutFile=$outFile }
         }
-        while($durTaskList.Count -gt 0){ $run=@(); foreach($t in $durTaskList){ if(-not $t.Proc.HasExited){$run+=$t;continue}; $txt=[System.IO.File]::ReadAllText($t.OutFile); $sec=$null; if($txt -match '^\s*[\d\.]+'){[double]::TryParse($txt,[ref]$sec)|Out-Null}; $t.Item.DurationSec=$sec; $t.Item.DurationDisp=(Get-FriendlyDuration $sec) }; $durTaskList=$run; Start-Sleep -Milliseconds 20 }
+        while($durTaskList.Count -gt 0){
+            $run=@()
+            foreach($t in $durTaskList){
+                if(-not $t.Proc.HasExited){$run+=$t;continue}
+                # >>> FIX #8: 用 Get-Content -Raw
+                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
+                $sec = $null
+                if($txt -match '^\s*[\d\.]+'){
+                    try { $sec = [double]$txt } catch {}
+                }
+                $t.Item.DurationSec = $sec
+                $t.Item.DurationDisp = (Get-FriendlyDuration $sec)
+            }
+            $durTaskList=$run; Start-Sleep -Milliseconds 20
+        }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
@@ -641,7 +616,20 @@ if ($videoMode -and $exportMeta) {
             $proc = [System.Diagnostics.Process]::Start($psi)
             $durTaskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outFile }
         }
-        while($durTaskList.Count -gt 0){ $run=@(); foreach($t in $durTaskList){ if(-not $t.Proc.HasExited){$run+=$t;continue}; $txt=[System.IO.File]::ReadAllText($t.OutFile); $sec=$null; if($txt -match '^\s*[\d\.]+'){[double]::TryParse($txt,[ref]$sec)|Out-Null}; $durMap[$t.File.FullName]=$sec }; $durTaskList=$run; Start-Sleep -Milliseconds 40 }
+        while($durTaskList.Count -gt 0){
+            $run=@()
+            foreach($t in $durTaskList){
+                if(-not $t.Proc.HasExited){$run+=$t;continue}
+                # >>> FIX #8: 用 Get-Content -Raw
+                $txt = Get-Content -LiteralPath $t.OutFile -Raw -Encoding UTF8
+                $sec = $null
+                if($txt -match '^\s*[\d\.]+'){
+                    try { $sec = [double]$txt } catch {}
+                }
+                $durMap[$t.File.FullName] = $sec
+            }
+            $durTaskList=$run; Start-Sleep -Milliseconds 40
+        }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
     }
@@ -731,8 +719,14 @@ if($sortMode -ne "D"){
         $durResultList = @()
         while ($durTaskList.Count -gt 0) {
             $runDur = @()
-            foreach($dt in $durTaskList){ if(-not $dt.Proc.HasExited){$runDur+=$dt;continue}; $durSec=$null
-                if(Test-Path -LiteralPath $dt.OutFile -PathType Leaf){ $c=[System.IO.File]::ReadAllText($dt.OutFile); if($c -match '^\s*[\d\.]+'){[double]::TryParse($c,[ref]$durSec)|Out-Null} }
+            foreach($dt in $durTaskList){
+                if(-not $dt.Proc.HasExited){$runDur+=$dt;continue}
+                # >>> FIX #8: 用 Get-Content -Raw
+                $c = Get-Content -LiteralPath $dt.OutFile -Raw -Encoding UTF8
+                $durSec = $null
+                if($c -match '^\s*[\d\.]+'){
+                    try { $durSec = [double]$c } catch {}
+                }
                 $dispTime = Get-FriendlyDuration $durSec
                 $durResultList += [PSCustomObject]@{ OrigItem=$dt.OrigItem; DurationSec=$durSec; DurationDisp=$dispTime }
             }
