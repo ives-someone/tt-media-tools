@@ -18,6 +18,48 @@ maxm_v3.ps1
     - S模式选读取元数据：ffprobe 已返回 duration，顺带提取，不再弹窗问时长
     - 不读元数据→后置扫时长：TXT 强制输出时长列（即使 $exportMeta=$false）
     - 后置扫完时长后刷新预览，让用户看到实际结果
+11. >>> FIX v11: 双进度条（目录+文件），单行回车刷新
+12. >>> FIX v12: B模式等非D模式时长显示修复：
+    - 预览输出直接信任 $metaHasDuration 标记，不再依赖单条 $item.DurationDisp -ne "-"
+    - TXT 保存同步修复 $hasDurationCol 判定
+    - 确保 ffprobe json 中 format.duration 被正确解析并传递到最终输出
+13. >>> FIX v13: 时长显示兜底 + 进度条单行刷新（2026-10-20）
+    - 元数据解析前强制初始化 $durSec=0.0/$durDisp="-"，解析成功才覆盖，确保 $vi.DurationDisp 非空
+    - 预览段：当 $metaHasDuration 为真时，若单条 DurationDisp 仍为 "-" 则用 Get-FriendlyDuration(0) 兜底显示 "00m00s"，避免全 "-"
+    - 进度条：Show-DualProgressBar 已用 `r + Write-Host -NoNewline 单行覆盖，扫描结束 Write-Host "" 换行
+    - TXT 保存维持 v12 的 $metaHasDuration 判定（不再改列逻辑）
+14. >>> FIX v14: 准备阶段实时进度（2026-10-20）
+    - 目录统计与文件收集合并为同一阶段，边遍历边显示单行进度，消除"假死感"
+    - 非交互模式同步应用
+15. >>> FIX v15: 三阶段线性融合进度条（2026-10-20）
+    - 将整体进度分为：阶段1(目录遍历40%) + 阶段2(元数据读取60%)
+    - 全程单行覆盖，从0%到100%连续推进，不再出现"进度条一闪而过"
+    - Show-DualProgressBar 改为 Show-LinearProgressBar，显示总进度百分比
+16. >>> FIX v16: 一次 ffprobe 全拿三件套 + 删后置扫描 + 进度条收尾（2026-10-20）
+    - $extraArgs 统一追加 :format=duration，B/R/S(元数据) 模式一次调用拿全码率+分辨率+时长
+    - 删除交互模式后置时长扫描弹窗及整个后置扫描逻辑（时长已在第一轮 ffprobe 中获取）
+    - 删除非交互模式 $ScanDuration 后置扫描段
+    - $metaHasDuration 简化为直接等于 $exportMeta（只要调 ffprobe 就有时长）
+    - 预览段不再对0秒调用 Get-FriendlyDuration(0) 兜底
+    - 交互模式阶段1进度条收尾从40%改为100%
+    - TXT 输出列判定统一用 $exportMeta
+17. >>> FIX v17: 百分比变化才刷新，防止爆发式刷屏（2026-10-20）
+    - 阶段2主循环增加 $lastPct 变量，仅百分比变化或完成时调用 Show-LinearProgressBar
+    - 配合 300ms 节流，解决并发 ffprobe 结果集中返回时进度条瞬间刷屏问题
+18. >>> FIX v18: 阶段2进度条独立0-100%（2026-10-20）
+    - 阶段2不再映射 40-100%，改为独立 0-100%（$processedCount/$totalVideoCount*100）
+    - 修复原代码中 $pctVal=$phase2Current 引用不存在变量的 bug，改为 $pctVal=$phase2Pct
+    - 阶段1(扫描)和阶段2(元数据)各自从0%走到100%，视觉边界清晰
+19. >>> FIX v19: 最终大小过滤 + TXT 注明过滤统计（2026-10-20）
+    - 新增 -MinSizeMB 参数，在排序完成后、预览输出前过滤掉小于指定大小的文件
+    - 原排序逻辑（升降序）一字不动，过滤仅作为最终拦截环节
+    - TXT 输出头部注明：按大小条件过滤掉多少个文件、过滤阈值是多少
+20. >>> FIX v20: 二次排序（2026-10-20）
+    - 新增 -ReSortBy 参数，支持对主排序结果集按另一维度重新排序
+    - 支持维度：D(时长)、S(文件大小)、B(码率)、R(分辨率长边)
+    - 默认降序排列，升序接口预留（-ReSortAsc 将来再加）
+    - 执行位置：主排序完成后、大小过滤前，不改变原排序逻辑
+    - 非交互/交互模式均支持
 #>
 
 param(
@@ -37,6 +79,8 @@ param(
     [switch]$JsonOutput,
     [switch]$SizeTop,
     [int]$SizeTopCount = 100,
+    [long]$MinSizeMB = 0,
+    [string]$ReSortBy = "",           # >>> FIX v20: 二次排序维度，D/S/B/R，默认空=不二次排序
     [string]$UserQuery = ""
 )
 
@@ -85,8 +129,8 @@ function Cleanup-TaskProcesses {
 }
 
 function Get-AllFilteredFiles {
-    param([string]$Path,[bool]$DoRecurse,[string[]]$BlackList,[ref]$OutAccessDeniedDirs,[ref]$OutScanErrors)
-    $fileList = @(); $subDirs = @()
+    param([string]$Path,[bool]$DoRecurse,[string[]]$BlackList,[ref]$OutAccessDeniedDirs,[ref]$OutScanErrors,[switch]$ShowProgress)
+    $fileList = @(); $subDirs = @(); $dirCount = 0
     try { $files = Get-ChildItem -LiteralPath $Path -File -ErrorAction Stop; $fileList += $files }
     catch {
         if ($_.Exception.HResult -eq -2147024891) { if ($Path -and $Path -notin $OutAccessDeniedDirs.Value) { $OutAccessDeniedDirs.Value += $Path } }
@@ -96,17 +140,20 @@ function Get-AllFilteredFiles {
         try { $subDirs = Get-ChildItem -LiteralPath $Path -Directory -ErrorAction Stop }
         catch { if ($_.Exception.HResult -eq -2147024891) { if ($Path -and $Path -notin $OutAccessDeniedDirs.Value) { $OutAccessDeniedDirs.Value += $Path } }; $OutScanErrors.Value += $_ }
         foreach ($d in $subDirs) {
+            $dirCount++
+            if ($ShowProgress -and $dirCount % 5 -eq 0) {
+                Write-Host ("`r  ├─ 扫描目录中... {0} | 已收集文件: {1}" -f $dirCount, $fileList.Count) -NoNewline
+            }
             $dirName = $d.Name; $hitBlack = $false
             foreach($bItem in $BlackList){ if($dirName.IndexOf($bItem, [System.StringComparison]::OrdinalIgnoreCase) -ge 0){ $hitBlack = $true; break } }
-            if($hitBlack){ Write-Host ">> 跳过黑名单文件夹：$($d.FullName)" -ForegroundColor DarkGray; continue }
-            $childResult = Get-AllFilteredFiles -Path $d.FullName -DoRecurse $true -BlackList $BlackList -OutAccessDeniedDirs $OutAccessDeniedDirs -OutScanErrors $OutScanErrors
+            if($hitBlack){ Write-Host "`n>> 跳过黑名单文件夹：$($d.FullName)" -ForegroundColor DarkGray; continue }
+            $childResult = Get-AllFilteredFiles -Path $d.FullName -DoRecurse $true -BlackList $BlackList -OutAccessDeniedDirs $OutAccessDeniedDirs -OutScanErrors $OutScanErrors -ShowProgress:$ShowProgress
             $fileList += $childResult
         }
     }
     return $fileList
 }
 
-# >>> FIX v5: 退回旧代码稳定方案 —— cmd /c + noprint_wrappers=1:nokey=1 + 重定向文件
 function Invoke-FfprobeDuration {
     param([string]$FilePath,[string]$OutFile)
     $arg = '/c ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "' + $FilePath + '" > "' + $OutFile + '"'
@@ -146,10 +193,25 @@ function Get-FfprobeArgs {
     if ($ExtraArgs) { return "$ExtraArgs -- $quotedPath" } else { return "-- $quotedPath" }
 }
 
+# >>> FIX v15: 线性总进度条 - 三阶段融合，单行回车刷新
+function Show-LinearProgressBar {
+    param([int]$Current, [int]$Total, [string]$Status="", [int]$ThrottleMs=300)
+    $now = [Environment]::TickCount
+    if ($null -eq $script:_lastProgTick) { $script:_lastProgTick = 0 }
+    $pct = if($Total -gt 0){ [int]($Current / $Total * 100) }else{0}
+    if (($now - $script:_lastProgTick) -lt $ThrottleMs -and $pct -eq $script:_lastPct -and $Current -lt $Total) { return }
+    $script:_lastProgTick = $now; $script:_lastPct = $pct
+    $barLen = 30; $filled = [int]($barLen * $pct / 100)
+    $bar = ("█" * $filled).PadRight($barLen, "░")
+    $line = "`r[$bar] $pct% ($Current/$Total) $Status"
+    if ($Current -ge $Total) { Write-Host "$line`n" -NoNewline }
+    else { Write-Host $line -NoNewline }
+}
+
 # ====================== 非交互模式入口 ======================
 if ($Mode -ne "") {
     Write-Host ">>> 非交互模式：参数驱动" -ForegroundColor Cyan
-    Write-Host ">>> Mode=$Mode Recurse=$($Recurse.IsPresent) Meta=$($Meta.IsPresent) BitrateThreshold=$BitrateThreshold MinBitrate=$MinBitrate MinHeight=$MinHeight MaxHeight=$MaxHeight" -ForegroundColor Gray
+    Write-Host ">>> Mode=$Mode Recurse=$($Recurse.IsPresent) Meta=$($Meta.IsPresent) BitrateThreshold=$BitrateThreshold MinBitrate=$MinBitrate MinHeight=$MinHeight MaxHeight=$MaxHeight MinSizeMB=$MinSizeMB ReSortBy=$ReSortBy" -ForegroundColor Gray
 
     $scanRoot = if ($Path) { $Path } else { $PWD.Path.Trim() }
     $recurseParam = $Recurse.IsPresent
@@ -162,6 +224,10 @@ if ($Mode -ne "") {
     $useBitrateFilter = ($bitrateThresholdKbps -gt 0)
     $maxConcurrent = 4; $progressStep = 20
 
+    # >>> FIX v19: 计算最小文件大小过滤阈值
+    $minSizeBytes = if ($MinSizeMB -gt 0) { $MinSizeMB * 1024 * 1024 } else { 0 }
+    if ($minSizeBytes -gt 0) { Write-Host "大小过滤：排除小于 $MinSizeMB MB 的文件" -ForegroundColor Yellow }
+
     if ($exportMeta -and -not (Test-FfprobeAvailable)) {
         Write-Host "错误：需要 ffprobe 但未找到，请安装后重试" -ForegroundColor Red; exit 1
     }
@@ -169,6 +235,8 @@ if ($Mode -ne "") {
     Write-Host "扫描路径：$scanRoot"
     Write-Host "递归：$recurseParam | 仅视频：$videoMode | 排序：$sortMode | 元数据：$exportMeta"
     if ($useBitrateFilter) { Write-Host "码率阈值：>= $bitrateThresholdKbps kbps" }
+    if ($minSizeBytes -gt 0) { Write-Host "大小过滤：>= $MinSizeMB MB" }
+    if ($ReSortBy) { Write-Host "二次排序：按 $ReSortBy 降序（默认降序）" -ForegroundColor Cyan }
     Write-Host "输出条数：$topCount"
     Write-Host ""
 
@@ -180,25 +248,35 @@ if ($Mode -ne "") {
     }
 
     $accessDeniedDirs = @(); $scanErrors = @()
-    $rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors)
+
+    Write-Host "正在扫描文件（阶段1/2）..." -ForegroundColor DarkCyan
+    $totalPhase1 = 100; $totalPhase2 = 100
+    Show-LinearProgressBar -Current 0 -Total $totalPhase1 -Status "初始化扫描..."
+    Start-Sleep -Milliseconds 100
+
+    $rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors) -ShowProgress
+    Show-LinearProgressBar -Current $totalPhase1 -Total $totalPhase1 -Status "文件收集完成，共 $($rawAll.Count) 个文件"
+    Write-Host ""
+
     $videoExts = @('.mp4','.mov','.mkv','.avi','.flv','.wmv','.m4v','.ts','.mpg','.mpeg','.f4v','.m2ts','.mts','.webm','.rmvb')
     if ($videoMode) { $rawFiles = $rawAll | Where-Object { $_.Extension -in $videoExts } } else { $rawFiles = $rawAll }
     if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件"; exit 0 }
 
     $totalVideoCount = $rawFiles.Count
-    Write-Host "扫描到 $totalVideoCount 个文件，开始处理..."
+    Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
 
     $workList = @(); $metaFail = 0; $durMap = @{}
+    $metaHasDuration = $exportMeta
     
     if ($videoMode -and $exportMeta) {
-        Write-Host "【读取视频元数据】"
+        Write-Host "【读取视频元数据（阶段2/2）】" -ForegroundColor Cyan
         $tempDir = Join-Path $env:TEMP "video_meta_$(Get-Random)"
         New-Item -ItemType Directory -Path $tempDir | Out-Null
         $taskList = @()
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outPath = Join-Path $tempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json'
+            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height:format=duration -of json'
             $args2 = Get-FfprobeArgs -FilePath $f.FullName -ExtraArgs $extraArgs
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = "ffprobe.exe"; $psi.Arguments = $args2
@@ -208,13 +286,18 @@ if ($Mode -ne "") {
             $proc = [System.Diagnostics.Process]::Start($psi)
             $taskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outPath }
         }
-        $processedCount = 0
+        $processedCount = 0; $lastPct = -1
         while ($taskList.Count -gt 0) {
             $running = @()
             foreach ($t in $taskList) {
                 if (-not $t.Proc.HasExited) { $running += $t; continue }
                 $processedCount++
-                if($processedCount % $progressStep -eq 0){ Write-Host "已处理：$processedCount / $totalVideoCount" }
+                $phase2Pct = [int]($processedCount / $totalVideoCount * 100)
+                $pctVal = $phase2Pct
+                if ($pctVal -ne $lastPct -or $processedCount -eq $totalVideoCount) {
+                    Show-LinearProgressBar -Current $phase2Pct -Total 100 -Status "元数据读取: $processedCount/$totalVideoCount | $($t.File.Name)"
+                    $lastPct = $pctVal
+                }
                 $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null;DurationSec=$null;DurationDisp="-"}
                 if ($t.Proc.ExitCode -eq 0) {
                     try {
@@ -226,17 +309,13 @@ if ($Mode -ne "") {
                         $bitrateBps = $null; $bitrateSource = "bitrate"
                         if (-not [string]::IsNullOrWhiteSpace($vStream.bit_rate)) { $bitrateBps = [long]$vStream.bit_rate }
                         elseif (-not [string]::IsNullOrWhiteSpace($vStream.avg_bit_rate)) { $bitrateBps = [long]$vStream.avg_bit_rate; $bitrateSource = "avgbitrate" }
-                        
-                        # >>> FIX v10: 顺带提取时长（format.duration 在 json 里）
-                        $durSec = $null; $durDisp = "-"
+                        $durSec = 0.0; $durDisp = "-"
                         if ($jsonObj.format -and $jsonObj.format.duration) {
                             $tmp = 0.0
                             if ([double]::TryParse($jsonObj.format.duration, [ref]$tmp)) {
-                                $durSec = $tmp
-                                $durDisp = (Get-FriendlyDuration $durSec)
+                                $durSec = $tmp; $durDisp = (Get-FriendlyDuration $durSec)
                             }
                         }
-                        
                         $vi = [PSCustomObject]@{
                             BitrateKbps=if($bitrateBps){[Math]::Round($bitrateBps/1000)}else{$null}
                             BitrateSource=$bitrateSource; Width=$w; Height=$h; LongEdge=[Math]::Max($w,$h)
@@ -256,6 +335,8 @@ if ($Mode -ne "") {
             }
             $taskList = $running; Start-Sleep -Milliseconds 20
         }
+        Show-LinearProgressBar -Current 100 -Total 100 -Status "元数据读取完成！"
+        Write-Host ""
         Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     } else {
         foreach ($f in $rawFiles) {
@@ -275,6 +356,7 @@ if ($Mode -ne "") {
         if ($MaxHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -le $MaxHeight }) }
     }
 
+    # ---- 主排序 ----
     if ($sortMode -eq "B") {
         $sortedAll = @($workList | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}, @{E={$_.FileSizeBytes};D=$true})
         if ($useBitrateFilter) { $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
@@ -284,6 +366,7 @@ if ($Mode -ne "") {
     } elseif ($sortMode -eq "D") {
         Write-Host "【D模式：扫描时长】"
         $durTempDir = Join-Path $env:TEMP "dur_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
+        $durProcessed = 0
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outFile = Join-Path $durTempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
@@ -292,6 +375,8 @@ if ($Mode -ne "") {
             $sec = $null; $tmp = 0.0
             if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
             $durMap[$f.FullName] = $sec
+            $durProcessed++
+            if ($durProcessed % $progressStep -eq 0) { Write-Host "时长扫描：$durProcessed / $totalVideoCount" }
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
@@ -303,19 +388,27 @@ if ($Mode -ne "") {
     }
     $sorted = @($sorted)
 
-    # ---- 后置时长扫描 ----
-    if ($ScanDuration -and $sortMode -ne "D") {
-        Write-Host "【后置时长扫描】"
-        $durTempDir = Join-Path $env:TEMP "dur_post_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        foreach ($item in $sorted) {
-            $outFile = Join-Path $durTempDir "$(Get-Random).txt"
-            $result = Invoke-FfprobeDuration -FilePath $item.FullPath -OutFile $outFile
-            $txt = $result.Output
-            $sec = $null; $tmp = 0.0
-            if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
-            $item.DurationSec = $sec; $item.DurationDisp = (Get-FriendlyDuration $sec)
+    # >>> FIX v20: 二次排序（主排序完成后、大小过滤前）
+    if ($ReSortBy -and $ReSortBy.ToUpper() -in @("D","S","B","R")) {
+        $rsMode = $ReSortBy.ToUpper()
+        Write-Host ">> 二次排序：按 $rsMode 降序重新排列结果集（共 $($sorted.Count) 条）" -ForegroundColor Cyan
+        switch ($rsMode) {
+            "D" { $sorted = @($sorted | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{[double]::MaxValue}};D=$true}) }
+            "S" { $sorted = @($sorted | Sort-Object @{E={$_.FileSizeBytes};D=$true}) }
+            "B" { $sorted = @($sorted | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}) }
+            "R" { $sorted = @($sorted | Sort-Object @{E={if($_.LongEdge -eq $null){-1}else{$_.LongEdge}};D=$true}) }
         }
-        Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # >>> FIX v19: 最终大小过滤
+    $filteredOutCount = 0
+    if ($minSizeBytes -gt 0) {
+        $beforeFilter = $sorted.Count
+        $sorted = @($sorted | Where-Object { $_.FileSizeBytes -ge $minSizeBytes })
+        $filteredOutCount = $beforeFilter - $sorted.Count
+        if ($filteredOutCount -gt 0) {
+            Write-Host ">> 按大小过滤：排除 $filteredOutCount 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
+        }
     }
 
     # ---- 输出到控制台 ----
@@ -335,8 +428,15 @@ if ($Mode -ne "") {
         else { Write-Host $jsonText }
     } else {
         Write-Host "`n==================== 结果 ===================="
+        $showDuration = $videoMode -and $exportMeta
         foreach($r in $outputRows) {
-            Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f $r.Rank,$r.Duration,$r.Size,$r.Bitrate,$r.Resolution,$r.Path)
+            if ($showDuration) {
+                $dispDur = $r.Duration
+                if ($dispDur -eq $null) { $dispDur = "-" }
+                Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f $r.Rank,$dispDur,$r.Size,$r.Bitrate,$r.Resolution,$r.Path)
+            } else {
+                Write-Host ("[{0,3}] {1,-10} {2}" -f $r.Rank,$r.Size,$r.Path)
+            }
         }
         Write-Host "==============================================="
         Write-Host "共 $($outputRows.Count) 条结果"
@@ -348,20 +448,22 @@ if ($Mode -ne "") {
     } else {
         $fnRaw = "视频筛选结果"
     }
-    # 限制长度避免路径过长
     if ($fnRaw.Length -gt 80) { $fnRaw = $fnRaw.Substring(0, 80) }
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
     $outName = "本文件夹内文件筛选&排序统计_非交互模式_${fnRaw}_${ts}.txt"
     $lines = @()
     $lines += "非交互模式筛选结果"
     $lines += "查询：$($UserQuery.Trim())"
-    $lines += "参数：Mode=$sortMode Recurse=$recurseParam Meta=$exportMeta BitrateThreshold=$bitrateThresholdKbps MinHeight=$MinHeight MaxHeight=$MaxHeight"
+    $lines += "参数：Mode=$sortMode Recurse=$recurseParam Meta=$exportMeta BitrateThreshold=$bitrateThresholdKbps MinHeight=$MinHeight MaxHeight=$MaxHeight MinSizeMB=$MinSizeMB ReSortBy=$ReSortBy"
     $displayRoot = $scanRoot -replace '^Microsoft\.PowerShell\.Core\\FileSystem::',''
     $lines += "扫描根目录: $displayRoot"
     $lines += "时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    $lines += "总视频: $totalVideoCount | 筛选后: $($sorted.Length)"
+    $lines += "总视频: $totalVideoCount | 排序后: $($sorted.Length)"
+    if ($ReSortBy) { $lines += "二次排序: 按 $ReSortBy 降序" }
+    if ($minSizeBytes -gt 0) { $lines += "大小过滤: >= $MinSizeMB MB | 按此条件过滤掉 $filteredOutCount 个文件" }
     $lines += "--------------------------------------------------"
-    if ($videoMode -and ($exportMeta -or $ScanDuration)) {
+    $hasDurationCol = ($videoMode -and $exportMeta)
+    if ($hasDurationCol) {
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
         $lines += "--------------------------------------------------"
         for($i=0; $i -lt $sorted.Length; $i++){
@@ -414,7 +516,7 @@ trap {
 $maxConcurrent = 4; $progressStep = 20
 
 Write-Host "=============================================="
-Write-Host "查找视频/文件列表（S大小｜B码率｜R长边分辨率｜D视频时长）"
+Write-Host "查找视频/文件列表（S大小｜B码率｜R分辨率｜D视频时长）"
 Write-Host "=============================================="
 $recurseOpt = Wait-KeyPress -Prompt "`n是否扫描子文件夹？【Y】递归(默认) 【N】仅当前目录"
 $recurseParam = ($recurseOpt -ne "N")
@@ -473,6 +575,13 @@ if ($videoMode -and $sortMode -eq "B") {
     else { $topCount = [Math]::Max(1, [int]$inputCount) }
 }
 
+# >>> FIX v20: 交互模式 - 询问是否二次排序
+$reSortBy = ""
+if ($videoMode -and $exportMeta) {
+    $reSortOpt = Wait-KeyPress -Prompt "`n是否对结果集进行二次排序？【N】不二次排序(默认) 【D】按时长 【S】按文件大小 【B】按码率 【R】按分辨率"
+    if ($reSortOpt -in @("D","S","B","R")) { $reSortBy = $reSortOpt }
+}
+
 if ($videoMode) {
     $filterDesc = "仅视频文件"
     if($sortMode -eq "D"){ $sortText = "视频时长降序，相同时长按文件大小降序" }
@@ -481,22 +590,22 @@ if ($videoMode) {
     else{ $sortText = if($exportMeta){"文件大小降序，附带视频元数据"}else{"文件大小降序"} }
 } else { $filterDesc = "全部文件"; $sortText = "文件大小降序" }
 
-# >>> 变更9: 交互模式生成完整描述，供 TXT 文件名和内部头部使用
 $recurDesc = if($recurseParam){"递归子目录"}else{"仅当前目录"}
 $typeDesc = if($videoMode){"仅视频"}else{"全部文件"}
 $sortDesc = switch($sortMode){"S"{"文件大小"}"B"{"视频流码率"}"R"{"视频长边分辨率"}"D"{"视频时长"}}
 $filterDesc2 = if($useBitrateFilter){"按码率阈值($bitrateThresholdKbps kbps)筛选"}else{"不过滤码率"}
-$metaDesc = if($exportMeta){"读取元数据(码率/分辨率)"}else{"不读取元数据"}
-$fullDesc = "交互模式 | $recurDesc | $typeDesc | 排序:$sortDesc | $filterDesc2 | $metaDesc | 最大条数:$topCount"
-$interactiveDetail = "递归:$recurDesc | 类型:$typeDesc | 排序维度:$sortDesc | 码率筛选:$filterDesc2 | 元数据:$metaDesc | 最大输出:$topCount"
+$metaDesc = if($exportMeta){"读取元数据(码率/分辨率/时长)"}else{"不读取元数据"}
+$reSortDesc = if($reSortBy){"二次排序:按$reSortBy降序"}else{"不二次排序"}
+$fullDesc = "交互模式 | $recurDesc | $typeDesc | 排序:$sortDesc | $filterDesc2 | $metaDesc | $reSortDesc | 最大条数:$topCount"
+$interactiveDetail = "递归:$recurDesc | 类型:$typeDesc | 排序维度:$sortDesc | 码率筛选:$filterDesc2 | 元数据:$metaDesc | 二次排序:$reSortDesc | 最大输出:$topCount"
 
-# >>> FIX v10: 标记是否已在元数据中顺带获取了时长
-$metaHasDuration = ($exportMeta -and $sortMode -ne "D")
+$metaHasDuration = $exportMeta
 
 Write-Host "`n========================================"
 Write-Host "开始扫描"
 Write-Host "过滤：$filterDesc | 排序：$sortText"
-if ($metaHasDuration) { Write-Host "（已读取元数据，时长将自动附带）" -ForegroundColor DarkGray }
+if ($reSortBy) { Write-Host "（结果集将按 $reSortBy 二次降序排列）" -ForegroundColor Cyan }
+if ($metaHasDuration) { Write-Host "（已读取元数据，时长/码率/分辨率将自动附带）" -ForegroundColor DarkGray }
 Write-Host "=======================================`n"
 
 $scanRoot = $PWD.Path.Trim()
@@ -506,21 +615,31 @@ if (Test-Path -LiteralPath $blacklistFile) {
 }
 
 $accessDeniedDirs = @(); $scanErrors = @()
-$rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors)
+
+Write-Host "正在扫描文件（阶段1/2）..." -ForegroundColor DarkCyan
+Show-LinearProgressBar -Current 0 -Total 100 -Status "初始化扫描..."
+
+$rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors) -ShowProgress
+Show-LinearProgressBar -Current 100 -Total 100 -Status "文件收集完成，共 $($rawAll.Count) 个文件"
+Write-Host ""
+
 if ($videoMode) { $rawFiles = $rawAll | Where-Object { $_.Extension -in $videoExts } } else { $rawFiles = $rawAll }
 if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件，按任意键退出"; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); exit 0 }
 
-$workList = @(); $metaFail = 0; $totalVideoCount = $rawFiles.Count; $durMap = @{}; $taskList = @()
+$totalVideoCount = $rawFiles.Count
+Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
+
+$workList = @(); $metaFail = 0; $durMap = @{}; $taskList = @()
 
 if ($videoMode -and $exportMeta) {
-    Write-Host "【批量读取视频流元数据】`n"
+    Write-Host "【批量读取视频流元数据（阶段2/2）】`n" -ForegroundColor Cyan
     $tempDir = Join-Path $env:TEMP "video_meta_$(Get-Random)"
     try {
         New-Item -ItemType Directory -Path $tempDir | Out-Null
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 40 }
             $outPath = Join-Path $tempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
-            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height -of json'
+            $extraArgs = '-v error -select_streams v:0 -show_entries stream=bit_rate,avg_bit_rate,width,height:format=duration -of json'
             $args2 = Get-FfprobeArgs -FilePath $f.FullName -ExtraArgs $extraArgs
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = "ffprobe.exe"; $psi.Arguments = $args2
@@ -530,13 +649,18 @@ if ($videoMode -and $exportMeta) {
             $proc = [System.Diagnostics.Process]::Start($psi)
             $taskList += [PSCustomObject]@{ File=$f; Proc=$proc; OutFile=$outPath }
         }
-        $processedCount = 0
+        $processedCount = 0; $lastPct = -1
         while ($taskList.Count -gt 0) {
             $running = @()
             foreach ($t in $taskList) {
                 if (-not $t.Proc.HasExited) { $running += $t; continue }
                 $processedCount++
-                if($processedCount % $progressStep -eq 0){ Write-Host "已处理：$processedCount / $totalVideoCount" }
+                $phase2Pct = [int]($processedCount / $totalVideoCount * 100)
+                $pctVal = $phase2Pct
+                if ($pctVal -ne $lastPct -or $processedCount -eq $totalVideoCount) {
+                    Show-LinearProgressBar -Current $phase2Pct -Total 100 -Status "元数据读取: $processedCount/$totalVideoCount | $($t.File.Name)"
+                    $lastPct = $pctVal
+                }
                 $vi = [PSCustomObject]@{BitrateKbps=$null;BitrateSource=$null;Width=$null;Height=$null;LongEdge=$null;DurationSec=$null;DurationDisp="-"}
                 if ($t.Proc.ExitCode -eq 0) {
                     try {
@@ -548,17 +672,13 @@ if ($videoMode -and $exportMeta) {
                         $bitrateBps = $null
                         if (-not [string]::IsNullOrWhiteSpace($vStream.bit_rate)) { $bitrateBps = [long]$vStream.bit_rate }
                         elseif (-not [string]::IsNullOrWhiteSpace($vStream.avg_bit_rate)) { $bitrateBps = [long]$vStream.avg_bit_rate }
-                        
-                        # >>> FIX v10: 顺带提取时长（format.duration 在 json 里）
-                        $durSec = $null; $durDisp = "-"
+                        $durSec = 0.0; $durDisp = "-"
                         if ($jsonObj.format -and $jsonObj.format.duration) {
                             $tmp = 0.0
                             if ([double]::TryParse($jsonObj.format.duration, [ref]$tmp)) {
-                                $durSec = $tmp
-                                $durDisp = (Get-FriendlyDuration $durSec)
+                                $durSec = $tmp; $durDisp = (Get-FriendlyDuration $durSec)
                             }
                         }
-                        
                         $vi = [PSCustomObject]@{
                             BitrateKbps=if($bitrateBps){[Math]::Round($bitrateBps/1000)}else{$null}
                             BitrateSource="bitrate"; Width=$w; Height=$h; LongEdge=[Math]::Max($w,$h)
@@ -577,12 +697,15 @@ if ($videoMode -and $exportMeta) {
             }
             $taskList = $running; Start-Sleep -Milliseconds 20
         }
+        Show-LinearProgressBar -Current 100 -Total 100 -Status "元数据读取完成！"
+        Write-Host ""
     }
     finally { Cleanup-TaskProcesses -TaskList $taskList; [GC]::Collect(); [GC]::WaitForPendingFinalizers(); if(Test-Path $tempDir){Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue} }
 
     if($sortMode -eq "D"){
         Write-Host "`n【D模式：全局预读取全部视频时长】`n"
         $durTempDir = Join-Path $env:TEMP "dur_batch_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
+        $durProcessed = 0
         foreach ($f in $rawFiles) {
             while ((Get-Process ffprobe -ErrorAction SilentlyContinue | Measure-Object).Count -ge $maxConcurrent) { Start-Sleep -Milliseconds 80 }
             $outFile = Join-Path $durTempDir "$($f.BaseName)_$($f.LastWriteTime.Ticks).txt"
@@ -591,6 +714,8 @@ if ($videoMode -and $exportMeta) {
             $sec = $null; $tmp = 0.0
             if ([double]::TryParse($txt, [ref]$tmp)) { $sec = $tmp }
             $durMap[$f.FullName] = $sec
+            $durProcessed++
+            if ($durProcessed % $progressStep -eq 0) { Write-Host "时长预读：$durProcessed / $totalVideoCount" }
         }
         Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
         for($wi=0;$wi -lt $workList.Count;$wi++){ $item=$workList[$wi]; $s=$durMap[$item.FullPath]; $item.DurationSec=$s; $item.DurationDisp=(Get-FriendlyDuration $s) }
@@ -620,86 +745,69 @@ else {
 }
 $sorted = @($sorted)
 
+# >>> FIX v20: 交互模式二次排序
+if ($reSortBy -and $reSortBy.ToUpper() -in @("D","S","B","R")) {
+    $rsMode = $reSortBy.ToUpper()
+    Write-Host "`n>> 二次排序：按 $rsMode 降序重新排列结果集（共 $($sorted.Count) 条）" -ForegroundColor Cyan
+    switch ($rsMode) {
+        "D" { $sorted = @($sorted | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{[double]::MaxValue}};D=$true}) }
+        "S" { $sorted = @($sorted | Sort-Object @{E={$_.FileSizeBytes};D=$true}) }
+        "B" { $sorted = @($sorted | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}) }
+        "R" { $sorted = @($sorted | Sort-Object @{E={if($_.LongEdge -eq $null){-1}else{$_.LongEdge}};D=$true}) }
+    }
+}
+
+# >>> FIX v19: 最终大小过滤
+$interactiveFilteredOut = 0
+if ($MinSizeMB -gt 0) {
+    $minSizeBytesInteractive = $MinSizeMB * 1024 * 1024
+    $beforeFilter = $sorted.Count
+    $sorted = @($sorted | Where-Object { $_.FileSizeBytes -ge $minSizeBytesInteractive })
+    $interactiveFilteredOut = $beforeFilter - $sorted.Count
+    if ($interactiveFilteredOut -gt 0) {
+        Write-Host "`n>> 按大小过滤：排除 $interactiveFilteredOut 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
+    }
+}
+
 # ---- 预览 ----
 Write-Host "`n==================== 预览 ===================="
 $outputRows = @()
+$showDuration = $videoMode -and $exportMeta
 for($i=0; $i -lt $sorted.Length; $i++){
     $item = $sorted[$i]; $rank = $i+1
     $outputRows += [PSCustomObject]@{ RankOrig=$rank; DurationDisp=$item.DurationDisp; FileSizeFriendly=$item.FileSizeFriendly; BitrateDisp=$item.BitrateDisp; ResDisp=$item.ResDisp; FullPath=$item.FullPath }
-    # >>> FIX v10: 预览时如果有时长就显示时长列，否则只显示大小
-    if ($videoMode -and ($exportMeta -or $item.DurationDisp -ne "-")) {
-        Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f $rank,$item.DurationDisp,$item.FileSizeFriendly,$item.BitrateDisp,$item.ResDisp,$item.FullPath)
+    if ($showDuration) {
+        $dispDur = $item.DurationDisp
+        if ($dispDur -eq $null) { $dispDur = "-" }
+        Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f $rank,$dispDur,$item.FileSizeFriendly,$item.BitrateDisp,$item.ResDisp,$item.FullPath)
     } else {
         Write-Host ("[{0,3}] {1,-10} {2}" -f $rank,$item.FileSizeFriendly,$item.FullPath)
     }
 }
 $outputRows = @($outputRows)
 
-# ---- 后置时长扫描 ----
-$doScanDuration = $false; $reSortKey = $null; $mergedList = $null
-
-# >>> FIX v10: 如果元数据已顺带获取了时长，自动标记为已扫描，不再弹窗
-if ($metaHasDuration) {
-    $doScanDuration = $true
-    Write-Host "`n（时长已在元数据中自动读取，跳过额外扫描）" -ForegroundColor DarkGray
-} elseif ($sortMode -ne "D") {
-    $durScanKey = Wait-KeyPress -Prompt "`n是否对本次结果集扫描视频时长？【Y=扫描；N=跳过(默认)】"
-    if ($durScanKey -eq "Y" -and (Test-FfprobeAvailable)) {
-        $doScanDuration = $true
-        Write-Host "`n===== 开始扫描本次结果集的视频时长 =====" -ForegroundColor Cyan
-        $durTempDir = Join-Path $env:TEMP "dur_postscan_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
-        $durResultList = @()
-        foreach ($rowItem in $sorted) {
-            $outFile = Join-Path $durTempDir "$(Get-Random).txt"
-            $result = Invoke-FfprobeDuration -FilePath $rowItem.FullPath -OutFile $outFile
-            $c = $result.Output
-            $durSec = $null; $tmp = 0.0
-            if ([double]::TryParse($c, [ref]$tmp)) { $durSec = $tmp }
-            $durResultList += [PSCustomObject]@{ OrigItem=$rowItem; DurationSec=$durSec; DurationDisp=(Get-FriendlyDuration $durSec) }
-        }
-        Remove-Item $durTempDir -Recurse -Force -ErrorAction SilentlyContinue
-        $mergedList = @()
-        foreach($dr in $durResultList){ $src=$dr.OrigItem; $mergedList += [PSCustomObject]@{ DurationSec=$dr.DurationSec; DurationDisp=$dr.DurationDisp; FileSizeFriendly=$src.FileSizeFriendly; BitrateDisp=$src.BitrateDisp; ResDisp=$src.ResDisp; FullPath=$src.FullPath } }
-        $outputRows = @($mergedList)
-        
-        # >>> FIX v10: 后置扫完时长后刷新预览
-        Write-Host "`n==================== 扫描后预览（含时长） ===================="
-        for($i=0; $i -lt $outputRows.Length; $i++){
-            $r = $outputRows[$i]
-            Write-Host ("[{0,3}] {1,-12} | {2,-10} | {3,-16} | {4,-12} | {5}" -f ($i+1),$r.DurationDisp,$r.FileSizeFriendly,$r.BitrateDisp,$r.ResDisp,$r.FullPath)
-        }
-        
-        $reSortKey = Wait-KeyPress -Prompt "`n保存选择：【N】沿用原有排序(默认)；【Y】按时长降序重新排序"
-        if($reSortKey -eq "Y"){ $outputRows = @($outputRows | Sort-Object @{E={if($_.DurationSec){$_.DurationSec}else{-1}};D=$true}) }
-    }
-}
-
 # ---- 保存 txt ----
 $saveKey = Wait-KeyPress -Prompt "`n保存列表（txt格式）到当前文件夹？【Y=保存（默认），N=跳过】"
 if ($saveKey -ne "N") {
     $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-    # 清理 $fullDesc 自带前缀（字面量替换，无需正则转义）+ 压缩空格下划线
     $cleanDesc = $fullDesc.Replace("交互模式", "").Replace(" ", "_").Replace("__", "_")
-    # 移除常见非法字符（使用字面量，避免正则方括号报错）
     $cleanDesc = $cleanDesc.Replace("<", "").Replace(">", "").Replace(":", "").Replace('"', "").Replace("/", "_").Replace("\", "_").Replace("|", "").Replace("?", "").Replace("*", "")
-    # 去除首尾下划线/空格，限制长度
     $cleanDesc = $cleanDesc.Trim("_ ").Trim()
     if ($cleanDesc.Length -gt 80) { $cleanDesc = $cleanDesc.Substring(0, 80) }
-    # 统一前缀
     $outName = "本文件夹内文件筛选&排序统计_交互模式_${cleanDesc}_${ts}.txt"
     $lines = @()
     $lines += "全能文件排序统计结果"
     $lines += $fullDesc
     $lines += "# 交互详情: $interactiveDetail"
-    if($doScanDuration){ $lines += "# 已附加视频时长列" }
     $displayRoot = $scanRoot -replace '^Microsoft\.PowerShell\.Core\\FileSystem::',''
     $lines += "#扫描根目录: $displayRoot"
     $lines += "#扫描时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     $lines += "#总扫描视频数量:$totalVideoCount"
+    $lines += "#排序后数量:$($sorted.Length)"
+    if ($reSortBy) { $lines += "#二次排序: 按 $reSortBy 降序" }
+    if ($MinSizeMB -gt 0) { $lines += "#大小过滤: >= $MinSizeMB MB | 按此条件过滤掉 $interactiveFilteredOut 个文件" }
     $lines += "#--------------------------------------------------"
-    
-    # >>> FIX v10: 只要有时长数据（$exportMeta 或 后置扫了时长），就输出完整列
-    $hasDurationCol = ($videoMode -and ($exportMeta -or $doScanDuration))
+    $hasDurationCol = ($videoMode -and $exportMeta)
     if($hasDurationCol){
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
         $lines += "#--------------------------------------------------"
@@ -720,5 +828,5 @@ if ($saveKey -ne "N") {
     catch{ Write-Host "`n【错误】写入失败：$($_.Exception.Message)" -ForegroundColor Red }
 }
 
-Write-Host "`n任务完成，按任意键关闭窗口"
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "`n任务完成，按回车键关闭窗口"
+Read-Host | Out-Null
