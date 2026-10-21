@@ -86,3 +86,4 @@ S模式 + -MinBitrate 组合说明：当用户要求"按大小排序"且附带�
 输出：maxm.ps1 -Recurse -Mode S -Meta -Top 100 -ReSortBy R -UserQuery "体积最大100个按分辨率降序排列"
 
 当前处于【等待需求】状态，未收到用户真实需求前，只回复"已就绪，请提需求"并输出此状态。
+
