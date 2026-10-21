@@ -41,12 +41,12 @@ while ($true) {
     Write-Host "=============================================="
     Write-Host "【1】 扫描提取视频时长并按多种需求添加到视频文件名里"        # 跳转到二级菜单1
     Write-Host "【2】 识别文件名内视频时长文字并按多种需求清理"          # 跳转到二级菜单2
-    Write-Host "【3】 文件扩展名规整，将大写扩展名批量转换为小写"        # ext_lower.ps1
-    Write-Host "【4】 文件名、文件夹内汉字数字批量替换为阿拉伯数字"         # cn_num2seq.ps1
-    Write-Host "【5】 NFO同步：刷新同步与视频同名的NFO文件内部名称"  # nfo同步模块 nfo.ps1
-	Write-Host "【6】 递归扫描NFO，提取信息导出CSV，便于筛查排序" 		   # 遍历nfo生成csv模块 nfo_output.ps1
-    Write-Host "【7】 TOP XX 的视频/文件查找和输出_新版双模式"  # maxm查找模块 maxm.ps1
-    Write-Host "【8】 快捷方式lnk目标路径批量替换，不完善，不认乱码"          # 快捷方式路径批量替换，暂不支持带emoji目标路径 rl.ps1
+    Write-Host "【3】 NFO同步：刷新同步与视频同名的NFO文件内部名称"  # nfo同步模块 nfo.ps1
+	Write-Host "【4】 递归扫描NFO，提取信息导出CSV，便于筛查排序" 		   # 遍历nfo生成csv模块 nfo_output.ps1
+    Write-Host "【5】 TOP XX 的视频/文件查找和输出_新版双模式"  # maxm查找模块 maxm.ps1
+    Write-Host "【6】 快捷方式lnk目标路径批量替换，不完善，不认乱码"          # 快捷方式路径批量替换，暂不支持带emoji目标路径 rl.ps1
+    Write-Host "【7】 小工具：文件扩展名规整，将大写扩展名批量转换为小写"        # ext_lower.ps1
+    Write-Host "【8】 小工具：文件名、文件夹内汉字数字批量替换为阿拉伯数字"         # cn_num2seq.ps1
     Write-Host ""
     Write-Host "【Q】退出程序"
     Write-Host "=============================================="
@@ -117,28 +117,28 @@ while ($true) {
         }
         "3" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "ext_lower.ps1")
+            & (Join-Path $ScriptDir "nfo.ps1")
         }
         "4" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "cn_num2seq.ps1")
+            & (Join-Path $ScriptDir "nfo_output.ps1")
         }
         "5" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "nfo.ps1")
+            & (Join-Path $ScriptDir "maxm.ps1")
         }
         "6" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "nfo_output.ps1")
+            & (Join-Path $ScriptDir "rl.ps1")
         }
         "7" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "maxm.ps1")
+            & (Join-Path $ScriptDir "ext_lower.ps1")
         }
         "8" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "rl.ps1")
-        }
+            & (Join-Path $ScriptDir "cn_num2seq.ps1")
+		}
         "q" { return }
         default {
             Write-Host "`n无效选项！" -ForegroundColor Yellow
