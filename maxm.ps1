@@ -60,6 +60,11 @@ maxm_v3.ps1
     - 默认降序排列，升序接口预留（-ReSortAsc 将来再加）
     - 执行位置：主排序完成后、大小过滤前，不改变原排序逻辑
     - 非交互/交互模式均支持
+21. >>> FIX v21: 筛选漏斗统计，TXT头部按执行顺序输出各环节拦截数量（2026-10-20）
+    - 新增漏斗计数变量：$heightFilteredCount, $sizeTopFilteredCount, $bitrateFilteredCount, $reSortCount, $sizeFilteredCount
+    - 非交互/交互模式均在对应筛选环节插入计数
+    - TXT 头部按实际执行顺序逐行输出：总扫描 → 高度过滤 → 体积初筛 → 码率过滤 → 二次排序 → 大小过滤 → 最终输出
+    - 仅在该环节实际触发且拦截数>0时才输出对应行，保持简洁
 #>
 
 param(
@@ -265,6 +270,16 @@ if ($Mode -ne "") {
     $totalVideoCount = $rawFiles.Count
     Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
 
+    # >>> FIX v21: 初始化漏斗计数变量
+    $heightFilteredCount = 0
+    $sizeTopFilteredCount = 0
+    $bitrateFilteredCount = 0
+    $sizeFilteredCount = 0
+    $workListCountBeforeHeight = 0
+    $workListCountBeforeSizeTop = 0
+    $workListCountBeforeBitrate = 0
+    $workListCountBeforeSizeFilter = 0
+
     $workList = @(); $metaFail = 0; $durMap = @{}
     $metaHasDuration = $exportMeta
     
@@ -347,20 +362,30 @@ if ($Mode -ne "") {
         }
     }
 
+    # >>> FIX v21: 体积初筛计数
+    $workListCountBeforeSizeTop = $workList.Count
     if ($SizeTop) {
         $sizeTopCount = [Math]::Max(1, $SizeTopCount)
         $workList = @($workList | Sort-Object FileSizeBytes -Descending | Select-Object -First $sizeTopCount)
+        $sizeTopFilteredCount = $workListCountBeforeSizeTop - $workList.Count
     }
+
+    # >>> FIX v21: 高度过滤计数
+    $workListCountBeforeHeight = $workList.Count
     if ($MinHeight -gt 0 -or $MaxHeight -gt 0) {
         if ($MinHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -ge $MinHeight }) }
         if ($MaxHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -le $MaxHeight }) }
+        $heightFilteredCount = $workListCountBeforeHeight - $workList.Count
     }
 
     # ---- 主排序 ----
     if ($sortMode -eq "B") {
         $sortedAll = @($workList | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}, @{E={$_.FileSizeBytes};D=$true})
+        # >>> FIX v21: 码率过滤计数
+        $workListCountBeforeBitrate = $sortedAll.Count
         if ($useBitrateFilter) { $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
         else { $sorted = @($sortedAll | Select-Object -First $topCount) }
+        $bitrateFilteredCount = $workListCountBeforeBitrate - $sorted.Count
     } elseif ($sortMode -eq "R") {
         $sorted = @($workList | Sort-Object @{E={if($_.LongEdge -eq $null){-1}else{$_.LongEdge}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
     } elseif ($sortMode -eq "D") {
@@ -383,8 +408,15 @@ if ($Mode -ne "") {
         $sorted = @($workList | Sort-Object @{E={if($_.DurationSec -ne $null){$_.DurationSec}else{-1}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
     } else {
         $sortedAll = @($workList | Sort-Object FileSizeBytes -Descending)
+        # >>> FIX v21: 码率过滤计数（S模式）
+        $workListCountBeforeBitrate = $sortedAll.Count
         if ($useBitrateFilter) { $sortedAll = @($sortedAll | Where-Object { $_.BitrateKbps -ne $null -and $_.BitrateKbps -ge $bitrateThresholdKbps }) }
         $sorted = @($sortedAll | Select-Object -First $topCount)
+        $bitrateFilteredCount = $workListCountBeforeBitrate - ($sortedAll.Count + ($sorted.Count))
+        # 修正：S模式下精确计算
+        if ($sortMode -eq "S") {
+            $bitrateFilteredCount = $workListCountBeforeBitrate - $sorted.Count - ($workListCountBeforeBitrate - $sortedAll.Count)
+        }
     }
     $sorted = @($sorted)
 
@@ -400,14 +432,14 @@ if ($Mode -ne "") {
         }
     }
 
-    # >>> FIX v19: 最终大小过滤
-    $filteredOutCount = 0
+    # >>> FIX v19: 最终大小过滤（带计数）
+    $workListCountBeforeSizeFilter = $sorted.Count
     if ($minSizeBytes -gt 0) {
         $beforeFilter = $sorted.Count
         $sorted = @($sorted | Where-Object { $_.FileSizeBytes -ge $minSizeBytes })
-        $filteredOutCount = $beforeFilter - $sorted.Count
-        if ($filteredOutCount -gt 0) {
-            Write-Host ">> 按大小过滤：排除 $filteredOutCount 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
+        $sizeFilteredCount = $beforeFilter - $sorted.Count
+        if ($sizeFilteredCount -gt 0) {
+            Write-Host ">> 按大小过滤：排除 $sizeFilteredCount 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
         }
     }
 
@@ -458,10 +490,15 @@ if ($Mode -ne "") {
     $displayRoot = $scanRoot -replace '^Microsoft\.PowerShell\.Core\\FileSystem::',''
     $lines += "扫描根目录: $displayRoot"
     $lines += "时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    $lines += "总视频: $totalVideoCount | 排序后: $($sorted.Length)"
-    if ($ReSortBy) { $lines += "二次排序: 按 $ReSortBy 降序" }
-    if ($minSizeBytes -gt 0) { $lines += "大小过滤: >= $MinSizeMB MB | 按此条件过滤掉 $filteredOutCount 个文件" }
-    $lines += "--------------------------------------------------"
+    $lines += "# ===== 筛选漏斗统计（按执行顺序）====="
+    $lines += "#总扫描视频数量: $totalVideoCount"
+    if ($heightFilteredCount -gt 0) { $lines += "#高度过滤: 排除 $heightFilteredCount 个（范围 ${MinHeight}-${MaxHeight}P），剩余 $($totalVideoCount - $heightFilteredCount)" }
+    if ($sizeTopFilteredCount -gt 0) { $lines += "#体积初筛: 排除 $sizeTopFilteredCount 个（取前 $SizeTopCount 按大小），剩余 $($workListCountBeforeHeight - $heightFilteredCount)" }
+    if ($bitrateFilteredCount -gt 0) { $lines += "#码率过滤: 排除 $bitrateFilteredCount 个（>= ${bitrateThresholdKbps}kbps），剩余 $($workListCountBeforeHeight - $heightFilteredCount - $bitrateFilteredCount)" }
+    if ($ReSortBy) { $lines += "#二次排序: 按 $ReSortBy 降序重排（不拦截）" }
+    if ($sizeFilteredCount -gt 0) { $lines += "#大小过滤: 排除 $sizeFilteredCount 个（>= ${MinSizeMB}MB），剩余 $($sorted.Length)" }
+    $lines += "#最终输出数量: $($sorted.Length)"
+    $lines += "# ===== 筛选漏斗统计结束 ====="
     $hasDurationCol = ($videoMode -and $exportMeta)
     if ($hasDurationCol) {
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
@@ -629,6 +666,15 @@ if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件，按任意键退出"; 
 $totalVideoCount = $rawFiles.Count
 Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
 
+# >>> FIX v21: 初始化漏斗计数变量（交互模式）
+$interactiveHeightFiltered = 0
+$interactiveSizeTopFiltered = 0
+$interactiveBitrateFiltered = 0
+$interactiveSizeFiltered = 0
+$interactiveWorkListCountBeforeHeight = 0
+$interactiveWorkListCountBeforeSizeTop = 0
+$interactiveWorkListCountBeforeBitrate = 0
+
 $workList = @(); $metaFail = 0; $durMap = @{}; $taskList = @()
 
 if ($videoMode -and $exportMeta) {
@@ -726,11 +772,30 @@ if ($videoMode -and $exportMeta) {
     }
 }
 
+# >>> FIX v21: 体积初筛计数（交互模式）
+$interactiveWorkListCountBeforeSizeTop = $workList.Count
+if ($SizeTop) {
+    $sizeTopCount = [Math]::Max(1, $SizeTopCount)
+    $workList = @($workList | Sort-Object FileSizeBytes -Descending | Select-Object -First $sizeTopCount)
+    $interactiveSizeTopFiltered = $interactiveWorkListCountBeforeSizeTop - $workList.Count
+}
+
+# >>> FIX v21: 高度过滤计数（交互模式）
+$interactiveWorkListCountBeforeHeight = $workList.Count
+if ($MinHeight -gt 0 -or $MaxHeight -gt 0) {
+    if ($MinHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -ge $MinHeight }) }
+    if ($MaxHeight -gt 0) { $workList = @($workList | Where-Object { $_.Height -le $MaxHeight }) }
+    $interactiveHeightFiltered = $interactiveWorkListCountBeforeHeight - $workList.Count
+}
+
 # ---- 排序 ----
 if ($videoMode -and $sortMode -eq "B") {
     $sortedAll = @($workList | Sort-Object @{E={if($_.BitrateKbps -eq $null){-1}else{$_.BitrateKbps}};D=$true}, @{E={$_.FileSizeBytes};D=$true})
+    # >>> FIX v21: 码率过滤计数（交互模式）
+    $interactiveWorkListCountBeforeBitrate = $sortedAll.Count
     if($useBitrateFilter){ $sorted = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
     else { $sorted = @($sortedAll | Select-Object -First $topCount) }
+    $interactiveBitrateFiltered = $interactiveWorkListCountBeforeBitrate - $sorted.Count
 }
 elseif ($videoMode -and $sortMode -eq "R") {
     $sorted = @($workList | Sort-Object @{E={if($_.LongEdge -eq $null){-1}else{$_.LongEdge}};D=$true}, @{E={$_.FileSizeBytes};D=$true} | Select-Object -First $topCount)
@@ -740,8 +805,11 @@ elseif ($videoMode -and $sortMode -eq "D") {
 }
 else {
     $sortedAll = @($workList | Sort-Object FileSizeBytes -Descending)
+    # >>> FIX v21: 码率过滤计数（交互模式 S模式）
+    $interactiveWorkListCountBeforeBitrate = $sortedAll.Count
     if ($useBitrateFilter) { $sortedAll = @($sortedAll | Where-Object { $_.BitrateKbps -ge $bitrateThresholdKbps }) }
     $sorted = @($sortedAll | Select-Object -First $topCount)
+    $interactiveBitrateFiltered = $interactiveWorkListCountBeforeBitrate - $sorted.Count
 }
 $sorted = @($sorted)
 
@@ -757,15 +825,15 @@ if ($reSortBy -and $reSortBy.ToUpper() -in @("D","S","B","R")) {
     }
 }
 
-# >>> FIX v19: 最终大小过滤
-$interactiveFilteredOut = 0
+# >>> FIX v19: 最终大小过滤（交互模式，带计数）
+$interactiveSizeFiltered = 0
 if ($MinSizeMB -gt 0) {
     $minSizeBytesInteractive = $MinSizeMB * 1024 * 1024
     $beforeFilter = $sorted.Count
     $sorted = @($sorted | Where-Object { $_.FileSizeBytes -ge $minSizeBytesInteractive })
-    $interactiveFilteredOut = $beforeFilter - $sorted.Count
-    if ($interactiveFilteredOut -gt 0) {
-        Write-Host "`n>> 按大小过滤：排除 $interactiveFilteredOut 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
+    $interactiveSizeFiltered = $beforeFilter - $sorted.Count
+    if ($interactiveSizeFiltered -gt 0) {
+        Write-Host "`n>> 按大小过滤：排除 $interactiveSizeFiltered 个小于 $MinSizeMB MB 的文件，剩余 $($sorted.Count) 个" -ForegroundColor Yellow
     }
 }
 
@@ -802,11 +870,15 @@ if ($saveKey -ne "N") {
     $displayRoot = $scanRoot -replace '^Microsoft\.PowerShell\.Core\\FileSystem::',''
     $lines += "#扫描根目录: $displayRoot"
     $lines += "#扫描时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    $lines += "#总扫描视频数量:$totalVideoCount"
-    $lines += "#排序后数量:$($sorted.Length)"
-    if ($reSortBy) { $lines += "#二次排序: 按 $reSortBy 降序" }
-    if ($MinSizeMB -gt 0) { $lines += "#大小过滤: >= $MinSizeMB MB | 按此条件过滤掉 $interactiveFilteredOut 个文件" }
-    $lines += "#--------------------------------------------------"
+    $lines += "# ===== 筛选漏斗统计（按执行顺序）====="
+    $lines += "#总扫描视频数量: $totalVideoCount"
+    if ($interactiveHeightFiltered -gt 0) { $lines += "#高度过滤: 排除 $interactiveHeightFiltered 个（范围 ${MinHeight}-${MaxHeight}P），剩余 $($totalVideoCount - $interactiveHeightFiltered)" }
+    if ($interactiveSizeTopFiltered -gt 0) { $lines += "#体积初筛: 排除 $interactiveSizeTopFiltered 个（取前 $SizeTopCount 按大小），剩余 $($totalVideoCount - $interactiveHeightFiltered - $interactiveSizeTopFiltered)" }
+    if ($interactiveBitrateFiltered -gt 0) { $lines += "#码率过滤: 排除 $interactiveBitrateFiltered 个（>= ${bitrateThresholdKbps}kbps），剩余 $($totalVideoCount - $interactiveHeightFiltered - $interactiveSizeTopFiltered - $interactiveBitrateFiltered)" }
+    if ($reSortBy) { $lines += "#二次排序: 按 $reSortBy 降序重排（不拦截）" }
+    if ($interactiveSizeFiltered -gt 0) { $lines += "#大小过滤: 排除 $interactiveSizeFiltered 个（>= ${MinSizeMB}MB），剩余 $($sorted.Length)" }
+    $lines += "#最终输出数量: $($sorted.Length)"
+    $lines += "# ===== 筛选漏斗统计结束 ====="
     $hasDurationCol = ($videoMode -and $exportMeta)
     if($hasDurationCol){
         $lines += ("{0,-4}|{1,-12}|{2,-10}|{3,-16}|{4,-12}|{5}" -f "序号","时长","大小","码率","分辨率","完整路径")
