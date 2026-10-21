@@ -145,3 +145,5 @@ foreach($row in $changeList){
 Write-Host "`n===== 全部任务完成，按任意键关闭 ====="
 Write-Host "`n===== 快捷方式路径中如果有乱码/emoji内容，可用独立软件LiNK Fixer操作替换 ====="
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
+
