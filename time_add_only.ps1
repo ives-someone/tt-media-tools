@@ -492,3 +492,4 @@ finally {
 }
 
 Wait-AnyKey "`n按任意键返回菜单..."
+
