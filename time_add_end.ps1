@@ -1,4 +1,4 @@
-<#
+﻿<#
 time_add_end.ps1
 功能：文件名【后置时长】：原文件 → xxx.mp4 → xxx 01m20s.mp4
 统一逻辑（与 time_add_begin 对齐）：

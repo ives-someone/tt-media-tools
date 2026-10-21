@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Emby NFO 扫描与元数据 CSV 导出脚本
 .DESCRIPTION
