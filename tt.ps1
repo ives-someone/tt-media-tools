@@ -44,8 +44,9 @@ while ($true) {
     Write-Host "【3】 大写文件名扩展改成小写"        # ext_lower.ps1
     Write-Host "【4】 汉字数字重命名为01~10"         # cn_num2seq.ps1
     Write-Host "【5】 NFO同步：刷新同名nfo内部名称"  # nfo同步模块 nfo.ps1
-    Write-Host "【6】 TOP XX 的视频/文件查找和输出"  # maxm查找模块 maxm.ps1
-    Write-Host "【7】 快捷方式路径批量替换"          # 快捷方式路径批量替换，暂不支持带emoji目标路径 rl.ps1
+	Write-Host "【6】 遍历nfo生成csv供分析" 		   # 遍历nfo生成csv模块 nfo_output.ps1
+    Write-Host "【7】 TOP XX 的视频/文件查找和输出"  # maxm查找模块 maxm.ps1
+    Write-Host "【8】 快捷方式路径批量替换"          # 快捷方式路径批量替换，暂不支持带emoji目标路径 rl.ps1
     Write-Host ""
     Write-Host "【Q】退出程序"
     Write-Host "=============================================="
@@ -85,9 +86,10 @@ while ($true) {
                 Write-Host "`n=============================================="
                 Write-Host "        清理时长文件名 - 二级菜单"
                 Write-Host "=============================================="
-                Write-Host "【1】 自动识别文件名中的时间"            # time_clr_auto.ps1
-                Write-Host "【2】 视频文件名里的时长在文件名末尾"   # time_clr_end.ps1
-                Write-Host "【3】 视频文件名里的时长在文件名开头"   # time_clr_begin.ps1
+                Write-Host "【1】 保留时间部分，自动识别文件名中的时间部分"            # time_clr_auto.ps1
+                Write-Host "【2】 保留时间部分，视频文件名里的时长在文件名末尾"   # time_clr_end.ps1
+                Write-Host "【3】 保留时间部分，视频文件名里的时长在文件名开头"   # time_clr_begin.ps1
+                Write-Host "【4】 去除文件名中的时间部分"   # time_clr_remove.ps1
                 Write-Host ""
                 Write-Host "【任意键返回上级菜单】"
                 Write-Host "=============================================="
@@ -104,6 +106,10 @@ while ($true) {
                     "3" {
                         Write-Host "`n`n"
                         & (Join-Path $ScriptDir "time_clr_begin.ps1")
+                    }                    
+                    "4" {
+                        Write-Host "`n`n"
+                        & (Join-Path $ScriptDir "time_clr_remove.ps1")
                     }
                     default { break menu2 }
                 }
@@ -123,9 +129,13 @@ while ($true) {
         }
         "6" {
             Write-Host "`n`n"
-            & (Join-Path $ScriptDir "maxm.ps1")
+            & (Join-Path $ScriptDir "nfo_output.ps1")
         }
         "7" {
+            Write-Host "`n`n"
+            & (Join-Path $ScriptDir "maxm.ps1")
+        }
+        "8" {
             Write-Host "`n`n"
             & (Join-Path $ScriptDir "rl.ps1")
         }
