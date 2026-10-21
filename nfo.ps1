@@ -275,3 +275,4 @@ Write-Host "`n✅日志已保存：$logFile" -ForegroundColor Green
 Write-Host "`n日志已放弃，没有生成日志文件。" -ForegroundColor Yellow
 }
 Wait-AnyKey
+
