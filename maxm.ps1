@@ -65,6 +65,12 @@ maxm_v3.ps1
     - 非交互/交互模式均在对应筛选环节插入计数
     - TXT 头部按实际执行顺序逐行输出：总扫描 → 高度过滤 → 体积初筛 → 码率过滤 → 二次排序 → 大小过滤 → 最终输出
     - 仅在该环节实际触发且拦截数>0时才输出对应行，保持简洁
+v22.0：新增CSV分析子菜单，检测当前目录nfo_export_*.csv（排除nfo_export_onlynfo_*.csv）
+	菜单1/2内联检查孤儿NFO/不一致，
+	菜单3纯CSV映射注入$workList（字段：视频文件路径/文件大小MB/总码率kbps/宽/高/时长_秒）跳过递归与格式询问从排序维度继续，
+	菜单4忽略CSV走完整扫描，Q返回主菜单exit 0。
+	全程零磁盘IO零ffprobe，D模式预读加-not $useCsvAsSource跳过，元数据分支加前置保护。
+	延续v21漏斗统计/预览/TXT保存不变。
 #>
 
 param(
@@ -529,7 +535,238 @@ if ($Mode -ne "") {
 
 # ====================== 交互模式 ======================
 
+# >>> v22.0 CSV检测与子菜单
+$csvInjectedWorkList = @()
+$useCsvAsSource = $false
+$skipRecurseAndFormat = $false
+$global:backToMainMenu = $false
+$global:csvRawData = $null
+
+$allCsvFiles = @(Get-ChildItem -Path ($PWD.Path) -Filter "nfo_export_*.csv" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike "nfo_export_onlynfo_*" } | Sort-Object LastWriteTime -Descending)
+if ($allCsvFiles.Count -gt 0) {
+    Write-Host "`n检测到以下CSV文件：" -ForegroundColor Cyan
+    $newestFlag = $true
+    $idx = 1
+    foreach ($f in $allCsvFiles) {
+        $tag = ""
+        if ($newestFlag) { $tag = "  ← [最新]"; $newestFlag = $false }
+        Write-Host "  $idx. $($f.Name)$tag" -ForegroundColor $(if ($tag) { "Green" } else { "White" })
+        $idx++
+    }
+    Write-Host ""
+    $maxChoice = $allCsvFiles.Count
+    do {
+        Write-Host "请选择要使用的CSV文件 [1-$maxChoice，直接回车=最新]: " -NoNewline -ForegroundColor Yellow
+        $choice = Read-Host
+        if ([string]::IsNullOrWhiteSpace($choice)) { $choice = "1" }
+    } while (-not [int]::TryParse($choice, [ref]$idx) -or $idx -lt 1 -or $idx -gt $maxChoice)
+    $selectedCsv = $allCsvFiles[$idx - 1]
+    Write-Host "已选择: $($selectedCsv.Name)" -ForegroundColor Green
+    $global:csvRawData = Import-Csv -Path $selectedCsv.FullName
+
+    while ($true) {
+        Write-Host "`n===== CSV 分析菜单 =====" -ForegroundColor Magenta
+        Write-Host "1. 孤立NFO检查（无视频路径）"
+        Write-Host "2. NFO内部名称不一致检查"
+        Write-Host "3. 按CSV筛选排序（注入列表，跳过扫描）"
+        Write-Host "4. 忽略CSV，真实扫描文件夹"
+        Write-Host "Q. 返回主菜单"
+        Write-Host "请选择: " -NoNewline
+        $csvMenu = [Console]::ReadKey($true).KeyChar.ToString().ToUpper()
+        Write-Host $csvMenu
+
+        switch ($csvMenu) {
+            "1" {
+                # 孤立NFO检查
+                $count = 0
+                $orphanNfoPaths = @()
+                foreach ($r in $global:csvRawData) {
+                    $vp = $r."视频文件路径"
+                    if ([string]::IsNullOrWhiteSpace($vp) -or $vp -eq "(未找到同名视频)") {
+                        $count++
+                        $orphanNfoPaths += $r.'NFO路径'
+                        Write-Host "  孤儿NFO: $($r.'NFO路径')" -ForegroundColor Yellow
+                    }
+                }
+                Write-Host "孤立NFO总数: $count" -ForegroundColor Cyan
+
+                # >>> v22.1 预览+自动输出TXT+清理交互
+                if ($count -gt 0) {
+                    # 屏幕预览最多10行
+                    Write-Host ""
+                    $previewMax = [Math]::Min(10, $orphanNfoPaths.Count)
+                    for ($pi = 0; $pi -lt $previewMax; $pi++) {
+                        Write-Host ("  {0}. {1}" -f ($pi + 1), $orphanNfoPaths[$pi]) -ForegroundColor DarkYellow
+                    }
+                    if ($orphanNfoPaths.Count -gt 10) {
+                        Write-Host ("  … 还有 $($orphanNfoPaths.Count - 10) 个未显示") -ForegroundColor DarkGray
+                    }
+
+                    # 强制输出TXT到CSV所在目录（即当前目录）
+                    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+                    $orphanTxt = Join-Path ($PWD.Path) "孤立NFO列表_${ts}.txt"
+                    $orphanNfoPaths | Out-File $orphanTxt -Encoding UTF8
+                    Write-Host "`n已输出孤立NFO路径列表至: $orphanTxt" -ForegroundColor Cyan
+
+                    # 一键清理交互
+                    Write-Host "提示：可能存在误报，建议根据TXT自行复核。是否清理孤立NFO？【Y】清理 【N】不清理(默认)" -NoNewline -ForegroundColor Yellow
+                    $cleanKey = [Console]::ReadKey($true).KeyChar
+                    Write-Host " $cleanKey" -ForegroundColor Yellow
+                    if ($cleanKey -eq 'Y' -or $cleanKey -eq 'y') {
+                        $deleted = 0
+                        foreach ($p in $orphanNfoPaths) {
+                            try { Remove-Item -LiteralPath $p -Force; $deleted++ }
+                            catch { Write-Host "  ❌ 删除失败: $p" -ForegroundColor Red }
+                        }
+                        Write-Host "已清理 $deleted 个孤立NFO。" -ForegroundColor Green
+
+                        # >>> v22.6 同步从内存CSV数据中移除已删行
+                        $remainingRows = @()
+                        foreach ($row in $global:csvRawData) {
+                            $nfoPath = $row.'NFO路径'
+                            if ($nfoPath -and $orphanNfoPaths -contains $nfoPath) {
+                                continue
+                            }
+                            $remainingRows += $row
+                        }
+                        $global:csvRawData = $remainingRows
+                        Write-Host "已同步清理内存CSV数据中的对应行。" -ForegroundColor DarkGray
+
+                        # >>> v22.6 回写新CSV（原CSV不动，改用Export-Csv避免路径/编码坑）
+                        $newCsvName = "nfo_export_cleaned_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+                        # 强制解析为文件系统绝对路径，避免.NET路径格式异常
+                        $absDir = (Get-Item -LiteralPath $PWD.Path).FullName
+                        $newCsvPath = Join-Path $absDir $newCsvName
+                        try {
+                            $global:csvRawData | Export-Csv -LiteralPath $newCsvPath -NoTypeInformation -Encoding UTF8 -Force
+                            Write-Host "已生成清理后的CSV: $newCsvPath" -ForegroundColor Green
+                        } catch {
+                            Write-Host "  ❌ 新CSV生成失败: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    } else {
+                        Write-Host "未清理，请根据TXT自行复核删除（注意误报风险）。" -ForegroundColor Gray
+                    }
+                }
+
+                Write-Host "`n按任意键返回CSV分析菜单..." -ForegroundColor Gray
+                [Console]::ReadKey($true) | Out-Null
+                continue
+            }
+            "2" {
+                # NFO内部名称不一致检查
+                $count = 0
+                $inconsistentPaths = @()
+                foreach ($r in $global:csvRawData) {
+                    $hasVid = $r."HasVideo"
+                    $consistent = $r."Consistent"
+                    if ($hasVid -eq "False" -or $consistent -eq "False") {
+                        $count++
+                        $inconsistentPaths += $r.'NFO路径'
+                        Write-Host "  NFO内部名称不一致: $($r.'NFO路径') (HasVideo=$hasVid, Consistent=$consistent)" -ForegroundColor Yellow
+                    }
+                }
+                Write-Host "NFO内部名称不一致总数: $count" -ForegroundColor Cyan
+
+                # >>> v22.2 不一致列表预览+自动输出TXT
+                if ($count -gt 0) {
+                    Write-Host ""
+                    $previewMax = [Math]::Min(10, $inconsistentPaths.Count)
+                    for ($pi = 0; $pi -lt $previewMax; $pi++) {
+                        Write-Host ("  {0}. {1}" -f ($pi + 1), $inconsistentPaths[$pi]) -ForegroundColor DarkYellow
+                    }
+                    if ($inconsistentPaths.Count -gt 10) {
+                        Write-Host ("  … 还有 $($inconsistentPaths.Count - 10) 个未显示") -ForegroundColor DarkGray
+                    }
+
+                    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+                    $incTxt = Join-Path ($PWD.Path) "不一致NFO列表_${ts}.txt"
+                    $inconsistentPaths | Out-File $incTxt -Encoding UTF8
+                    Write-Host "`n已输出不一致NFO路径列表至: $incTxt" -ForegroundColor Cyan
+                }
+
+                Write-Host "`n按任意键返回CSV分析菜单..." -ForegroundColor Gray
+                [Console]::ReadKey($true) | Out-Null
+                continue
+            }
+
+            "3" {
+                # 按CSV筛选排序 - 构建workList
+                $csvInjectedWorkList = @()
+                $onlyNfoSkipped = 0
+                foreach ($r in $global:csvRawData) {
+                    $vPath = $r."视频文件路径"
+                    # onlynfo跳过：无真实视频路径
+                    if ([string]::IsNullOrWhiteSpace($vPath) -or $vPath -eq "(未找到同名视频)") {
+                        $onlyNfoSkipped++
+                        continue
+                    }
+                    # 文件大小：从CSV字段映射（MB → bytes）
+                    $sz = 0
+                    $mb = 0.0
+                    if ([double]::TryParse($r."文件大小_MB", [ref]$mb)) {
+                        $sz = [int64]($mb * 1048576)
+                    }
+                    $szF = if ($sz -gt 0) { (Get-FriendlySize -Bytes $sz) } else { "-" }
+                    # 码率
+                    $b = 0; $bit = $null
+                    if ([int]::TryParse($r."总码率_kbps", [ref]$b)) { $bit = $b }
+                    # 分辨率
+                    $w = 0; $wid = $null; $h = 0; $hei = $null
+                    if ([int]::TryParse($r."宽", [ref]$w)) { $wid = $w }
+                    if ([int]::TryParse($r."高", [ref]$h)) { $hei = $h }
+                    $res = "-"; $long = $null
+                    if ($wid -and $hei) { $res = "${wid}x${hei}"; $long = [Math]::Max($wid, $hei) }
+                    # 时长
+                    $durSec = $null; $durTxt = "-"
+                    $ds = 0.0
+                    if ([double]::TryParse($r."时长_秒", [ref]$ds)) { $durSec = $ds; $durTxt = (Get-FriendlyDuration $ds) }
+                    # 注入
+                    $csvInjectedWorkList += [PSCustomObject]@{
+                        FullPath        = $vPath.Trim()
+                        FileSizeBytes   = $sz
+                        FileSizeFriendly = $szF
+                        BitrateKbps     = $bit
+                        BitrateDisp     = if ($bit) { "${bit}kbps" } else { "-" }
+                        Width           = $wid
+                        Height          = $hei
+                        ResDisp         = $res
+                        LongEdge        = $long
+                        DurationSec     = $durSec
+                        DurationDisp    = $durTxt
+                    }
+                }
+                $totalVideoCount = $csvInjectedWorkList.Count
+                Write-Host "有效视频条目=$totalVideoCount，跳过onlynfo/无效行=$onlyNfoSkipped，将跳至排序维度..." -ForegroundColor Cyan
+                $useCsvAsSource = $true
+                $exportMeta = $true; $videoMode = $true; $metaHasDuration = $true
+                $scanRoot = $PWD.Path.Trim()
+                $skipRecurseAndFormat = $true
+                break
+            }
+            "4" {
+                # 忽略CSV，走完整扫描
+                Write-Host "忽略CSV，执行完整文件夹扫描..." -ForegroundColor Cyan
+                break
+            }
+            "Q" {
+                # 返回主菜单
+                $global:backToMainMenu = $true
+                break
+            }
+            default {
+                Write-Host "无效选项，请重新选择" -ForegroundColor Red
+                continue
+            }
+        }
+        # Q选项触发exit
+        if ($global:backToMainMenu) { exit 0 }
+        # 菜单3/4 break出来后继续主流程
+        if ($csvMenu -eq "3" -or $csvMenu -eq "4") { break }
+    }
+}
+
 $runningFfprobe = Get-Process -Name "ffprobe" -ErrorAction SilentlyContinue
+
 if ($runningFfprobe -and $runningFfprobe.Count -gt 0) {
     Write-Host "`n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" -ForegroundColor Yellow
     Write-Host "⚠️ 检测到本机存在 $($runningFfprobe.Count) 个正在运行 ffprobe.exe 进程" -ForegroundColor Yellow
@@ -555,11 +792,20 @@ $maxConcurrent = 4; $progressStep = 20
 Write-Host "=============================================="
 Write-Host "查找视频/文件列表（S大小｜B码率｜R分辨率｜D视频时长）"
 Write-Host "=============================================="
-$recurseOpt = Wait-KeyPress -Prompt "`n是否扫描子文件夹？【Y】递归(默认) 【N】仅当前目录"
-$recurseParam = ($recurseOpt -ne "N")
 
-$videoModeOpt = Wait-KeyPress -Prompt "`n是否仅扫描视频文件？【Y】仅视频(默认) 【N】全部文件"
-$videoMode = ($videoModeOpt -ne "N")
+if (-not $skipRecurseAndFormat) {
+    $recurseOpt = Wait-KeyPress -Prompt "`n是否扫描子文件夹？【Y】递归(默认) 【N】仅当前目录"
+    $recurseParam = ($recurseOpt -ne "N")
+} else {
+    $recurseParam = $true
+}
+
+if (-not $skipRecurseAndFormat) {
+    $videoModeOpt = Wait-KeyPress -Prompt "`n是否仅扫描视频文件？【Y】仅视频(默认) 【N】全部文件"
+    $videoMode = ($videoModeOpt -ne "N")
+} else {
+    $videoMode = $true
+}
 
 $videoExts = @('.mp4','.mov','.mkv','.avi','.flv','.wmv','.m4v','.ts','.mpg','.mpeg','.f4v','.m2ts','.mts','.webm','.rmvb')
 $sortMode = "S"; $exportMeta = $false; $isDowngrade = $false
@@ -633,7 +879,9 @@ $sortDesc = switch($sortMode){"S"{"文件大小"}"B"{"视频流码率"}"R"{"视�
 $filterDesc2 = if($useBitrateFilter){"按码率阈值($bitrateThresholdKbps kbps)筛选"}else{"不过滤码率"}
 $metaDesc = if($exportMeta){"读取元数据(码率/分辨率/时长)"}else{"不读取元数据"}
 $reSortDesc = if($reSortBy){"二次排序:按$reSortBy降序"}else{"不二次排序"}
-$fullDesc = "交互模式 | $recurDesc | $typeDesc | 排序:$sortDesc | $filterDesc2 | $metaDesc | $reSortDesc | 最大条数:$topCount"
+# >>> v22.0 CSV模式区分描述
+$modeLabel = if ($useCsvAsSource) { "根据CSV交互模式" } else { "交互模式" }
+$fullDesc = "$modeLabel | $recurDesc | $typeDesc | 排序:$sortDesc | $filterDesc2 | $metaDesc | $reSortDesc | 最大条数:$topCount"
 $interactiveDetail = "递归:$recurDesc | 类型:$typeDesc | 排序维度:$sortDesc | 码率筛选:$filterDesc2 | 元数据:$metaDesc | 二次排序:$reSortDesc | 最大输出:$topCount"
 
 $metaHasDuration = $exportMeta
@@ -645,26 +893,36 @@ if ($reSortBy) { Write-Host "（结果集将按 $reSortBy 二次降序排列）"
 if ($metaHasDuration) { Write-Host "（已读取元数据，时长/码率/分辨率将自动附带）" -ForegroundColor DarkGray }
 Write-Host "=======================================`n"
 
-$scanRoot = $PWD.Path.Trim()
-$blacklistFile = Join-Path $scanRoot "blacklist.txt"
-if (Test-Path -LiteralPath $blacklistFile) {
-    $scanBlackList = Get-Content -LiteralPath $blacklistFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and $_ -notmatch '^#' }
-}
+# >>> v22.0 CSV模式：跳过扫描，直接构建workList
+if ($useCsvAsSource -and $csvInjectedWorkList -and $csvInjectedWorkList.Count -gt 0) {
+    $workList = $csvInjectedWorkList
+    $totalVideoCount = $workList.Count
+    Write-Host "CSV注入模式：已加载 $totalVideoCount 个视频条目，跳过文件扫描。" -ForegroundColor Cyan
+    # 设置后续排序/漏斗所需变量
+    $rawFiles = @()  # 空占位，防止下方引用报错
+    $scanRoot = $PWD.Path.Trim()
+} else {
+    $scanRoot = $PWD.Path.Trim()
+    $blacklistFile = Join-Path $scanRoot "blacklist.txt"
+    if (Test-Path -LiteralPath $blacklistFile) {
+        $scanBlackList = Get-Content -LiteralPath $blacklistFile -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" -and $_ -notmatch '^#' }
+    }
 
-$accessDeniedDirs = @(); $scanErrors = @()
+    $accessDeniedDirs = @(); $scanErrors = @()
 
-Write-Host "正在扫描文件（阶段1/2）..." -ForegroundColor DarkCyan
-Show-LinearProgressBar -Current 0 -Total 100 -Status "初始化扫描..."
+    Write-Host "正在扫描文件（阶段1/2）..." -ForegroundColor DarkCyan
+    Show-LinearProgressBar -Current 0 -Total 100 -Status "初始化扫描..."
 
-$rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors) -ShowProgress
-Show-LinearProgressBar -Current 100 -Total 100 -Status "文件收集完成，共 $($rawAll.Count) 个文件"
-Write-Host ""
+    $rawAll = Get-AllFilteredFiles -Path $scanRoot -DoRecurse $recurseParam -BlackList $scanBlackList -OutAccessDeniedDirs ([ref]$accessDeniedDirs) -OutScanErrors ([ref]$scanErrors) -ShowProgress
+    Show-LinearProgressBar -Current 100 -Total 100 -Status "文件收集完成，共 $($rawAll.Count) 个文件"
+    Write-Host ""
 
-if ($videoMode) { $rawFiles = $rawAll | Where-Object { $_.Extension -in $videoExts } } else { $rawFiles = $rawAll }
-if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件，按任意键退出"; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); exit 0 }
+    if ($videoMode) { $rawFiles = $rawAll | Where-Object { $_.Extension -in $videoExts } } else { $rawFiles = $rawAll }
+    if ($rawFiles.Count -eq 0) { Write-Host "无匹配文件，按任意键退出"; $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown"); exit 0 }
 
-$totalVideoCount = $rawFiles.Count
-Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
+    $totalVideoCount = $rawFiles.Count
+    Write-Host "扫描到 $totalVideoCount 个视频文件，开始处理..." -ForegroundColor Green
+}  # >>> v22.0 闭合CSV else块
 
 # >>> FIX v21: 初始化漏斗计数变量（交互模式）
 $interactiveHeightFiltered = 0
@@ -675,9 +933,14 @@ $interactiveWorkListCountBeforeHeight = 0
 $interactiveWorkListCountBeforeSizeTop = 0
 $interactiveWorkListCountBeforeBitrate = 0
 
-$workList = @(); $metaFail = 0; $durMap = @{}; $taskList = @()
+# >>> v22.0 CSV模式已赋值则跳过初始化
+if (-not $useCsvAsSource) {
+    $workList = @()
+}
+$metaFail = 0; $durMap = @{}; $taskList = @()
 
-if ($videoMode -and $exportMeta) {
+# >>> v22.0 CSV模式跳过元数据读取（已有元数据）
+if (-not $useCsvAsSource -and $videoMode -and $exportMeta) {
     Write-Host "【批量读取视频流元数据（阶段2/2）】`n" -ForegroundColor Cyan
     $tempDir = Join-Path $env:TEMP "video_meta_$(Get-Random)"
     try {
@@ -748,8 +1011,8 @@ if ($videoMode -and $exportMeta) {
     }
     finally { Cleanup-TaskProcesses -TaskList $taskList; [GC]::Collect(); [GC]::WaitForPendingFinalizers(); if(Test-Path $tempDir){Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue} }
 
-    if($sortMode -eq "D"){
-        Write-Host "`n【D模式：全局预读取全部视频时长】`n"
+    if($sortMode -eq "D" -and -not $useCsvAsSource){
+        Write-Host "`n【D模式：全局预读取全部视频时长】`n" -ForegroundColor Cyan
         $durTempDir = Join-Path $env:TEMP "dur_batch_$(Get-Random)"; New-Item -ItemType Directory -Path $durTempDir | Out-Null
         $durProcessed = 0
         foreach ($f in $rawFiles) {
@@ -862,7 +1125,11 @@ if ($saveKey -ne "N") {
     $cleanDesc = $cleanDesc.Replace("<", "").Replace(">", "").Replace(":", "").Replace('"', "").Replace("/", "_").Replace("\", "_").Replace("|", "").Replace("?", "").Replace("*", "")
     $cleanDesc = $cleanDesc.Trim("_ ").Trim()
     if ($cleanDesc.Length -gt 80) { $cleanDesc = $cleanDesc.Substring(0, 80) }
-    $outName = "本文件夹内文件筛选&排序统计_交互模式_${cleanDesc}_${ts}.txt"
+	
+	# >>> v22.0 CSV模式区分文件名
+    $modeTag = if ($useCsvAsSource) { "根据CSV交互模式" } else { "交互模式" }
+    $outName = "本文件夹内文件筛选&排序统计_${modeTag}_${cleanDesc}_${ts}.txt"
+	
     $lines = @()
     $lines += "全能文件排序统计结果"
     $lines += $fullDesc
