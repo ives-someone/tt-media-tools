@@ -236,7 +236,7 @@ foreach ($dir in $dirOrder) {
             $fileSizeMB = "-"
             if ($DoMatchVideo) {
                 $videoPath = "(未找到同名视频)"
-                foreach ($ext in @("*.mkv","*.mp4","*.m4v","*.ts","*.avi","*.mov","*.webm")) {
+                foreach ($ext in @("*.mp4","*.mov","*.mkv","*.avi","*.flv","*.wmv","*.m4v","*.ts","*.mpg","*.mpeg","*.f4v","*.m2ts","*.mts","*.webm","*.rmvb")) {
                     foreach ($c in [System.IO.Directory]::GetFiles($parentDir, $ext)) {
                         if ([System.IO.Path]::GetFileNameWithoutExtension($c) -eq $baseName) {
                             $videoPath = $c
