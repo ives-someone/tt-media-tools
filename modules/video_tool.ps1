@@ -726,27 +726,35 @@ function New-MergeOutputName {
         [string]$Ext
     )
 
+    $total = $Infos.Count
+    $prefix = "合并_${total}段合并"
+
+    # 逐段清理原名：去掉 XXhXXmXXs / XXmXXs，空白收紧，去掉首尾多余分隔符。
+    # 清理后为空的段（纯时长名）用「第N段」占位；若所有段都是纯时长名，
+    # 则不再逐段罗列，直接写成「合并_3段合并 07m21s」。
     $components = @()
-    foreach ($info in $Infos) {
-        $base = [System.IO.Path]::GetFileNameWithoutExtension($info.Name)
+    $emptyCount = 0
+    for ($i = 0; $i -lt $Infos.Count; $i++) {
+        $base = [System.IO.Path]::GetFileNameWithoutExtension($Infos[$i].Name)
         $clean = [regex]::Replace($base, '\d{2}h\d{2}m\d{2}s|\d{2}m\d{2}s', '')
         $clean = [regex]::Replace($clean, '\s{2,}', ' ')
         $clean = $clean.Trim(' ', '-', '_', '.', '·')
-        if (-not [string]::IsNullOrEmpty($clean)) { $components += $clean }
+        if ([string]::IsNullOrEmpty($clean)) {
+            $emptyCount++
+            $components += "第$($i + 1)段"
+        } else {
+            $components += $clean
+        }
     }
+    if ($emptyCount -eq $total) { $components = @() }
 
     $joined = ($components -join '+')
     $durationTag = Format-DurationTag -Seconds $TotalSeconds
-    $prefix = '合并_'
     $extPart = ".$Ext"
 
-    # 拼接名与时长之间留一个空格，避免 "第二段07m21s" 粘在一起；
-    # 拼接名为空（全部是纯时长名）时不加，避免出现 "合并_ 07m21s" 的前导空格。
-    $separator = if ([string]::IsNullOrEmpty($joined)) { '' } else { ' ' }
-
-    # 预算 = 上限 - 前缀 - 分隔空格 - 时长 - 扩展名；再按目录长度收紧，并预留 _99 冲突后缀
+    # 预算 = 上限 - 前缀 - 两个空格 - 时长 - 扩展名；再按目录长度收紧，并预留 _99 冲突后缀
     $budget = [math]::Min($script:MaxMergedNameLength, $script:MaxMergedPathLength - $Root.Length) -
-              $prefix.Length - $separator.Length - $durationTag.Length - $extPart.Length - 4
+              $prefix.Length - 2 - $durationTag.Length - $extPart.Length - 4
     if ($budget -lt 8) { $budget = 8 }
 
     if ($joined.Length -gt $budget) {
@@ -756,7 +764,12 @@ function New-MergeOutputName {
         $joined = $joined.Substring(0, $cut).TrimEnd(' ', '-', '_', '.', '+')
     }
 
-    $stem = $prefix + $joined + $separator + $durationTag
+    # 前缀与拼接名之间、拼接名与时长之间各留一个空格
+    if ([string]::IsNullOrEmpty($joined)) {
+        $stem = $prefix + ' ' + $durationTag
+    } else {
+        $stem = $prefix + ' ' + $joined + ' ' + $durationTag
+    }
     $name = "$stem.$Ext"
     $path = Join-Path $Root $name
     $n = 2
