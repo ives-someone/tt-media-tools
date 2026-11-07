@@ -43,6 +43,11 @@ v3.9：抽出 Invoke-Module 统一封装子模块调用。
     同时补上异常兜底：子脚本抛未捕获异常时提示后回主菜单，不再导致整个 tt 崩溃；
     子脚本内的 OperationCanceledException（q/Esc 取消）静默处理，不打印错误。
     注释区块编号调整为：区块零 初始化 / 区块一·B 子模块调用封装 / 区块二 主菜单循环。
+v4.0：菜单新增第 9 项「视频合并 / 转码工具」（modules\video_tool.ps1）。
+    底部直达提示同步改为 [1-9] 直达；其余结构不变。
+v4.1：主菜单重排为 1~5 + 视频工具(6) + [0] 其他小工具集合。
+    原 6/7/8 三项收进二级菜单；子菜单跑完一个工具即回主菜单。
+    依赖 ui.ps1 v7.0 的数字标签（支持 [0] 直达）。
 ============================================================
 #>
 
@@ -106,11 +111,57 @@ function Invoke-Module {
 }
 
 # ============================================================
+# 区块一·C：其他小工具集合（v4.1）
+# 原菜单 6/7/8 三项收进二级菜单，跑完一个工具即回主菜单
+# ============================================================
+function Invoke-ToolSubmenu {
+    Clear-Screen
+    Write-Host ""
+    $cwdDisplay = $PWD.ProviderPath
+    if ($cwdDisplay.Length -gt 78) {
+        $cwdDisplay = $cwdDisplay.Substring(0, 38) + '…' + $cwdDisplay.Substring($cwdDisplay.Length - 38)
+    }
+    $subTitle = 'TT_Media_Tools — 其他小工具集合'
+    Write-Host "  $(col_a_title $subTitle)"
+    Write-Host "  $(col_a_line (sep))"
+    Write-Host ""
+    Write-Host "  $(col_a_text_muted '处理目录：')$(col_a_text $cwdDisplay)"
+    Write-Host ""
+
+    $subOptions = @(
+        "[1]文件扩展名规整，将大写扩展名批量转换为小写",
+        "[2]文件名、文件夹内汉字数字批量替换为阿拉伯数字",
+        "[3]快捷方式lnk目标路径批量替换（不完善，不认乱码）"
+    )
+    # 缩放重绘时要原样恢复标题区，行序必须与上面绘制的一致
+    $subHeader = @(
+        ""
+        "  $(col_a_title $subTitle)"
+        "  $(col_a_line (sep))"
+        ""
+        "  $(col_a_text_muted '处理目录：')$(col_a_text $cwdDisplay)"
+        ""
+    )
+    try {
+        $pick = Arrow-Menu -Options $subOptions -DefaultIndex 0 -Footer1 "  $(col_a_line (sep_weak))" -Footer2 "  $(col_a_text '[↑↓]移动  [1-3]直达  [Enter]确认  [q/Esc]返回主菜单')" -Header $subHeader
+    } catch [System.OperationCanceledException] {
+        # q / Esc → 回主菜单
+        return
+    }
+
+    switch ($pick) {
+        0 { Invoke-Module "ext_lower.ps1" }
+        1 { Invoke-Module "cn_to_arabic.ps1" }
+        2 { Invoke-Module "lnk_replace.ps1" }
+    }
+    # 子模块结束后函数返回，主循环重新绘制主菜单
+}
+# ============================================================
 # 区块二：主菜单循环（v3.8 适配 Arrow-Menu -Footer1 参数）
 # Arrow-Menu 箭头导航，↑↓移动 / 数字直达 / 回车确认 / q·Esc 退出
-# 纯字符串数组传入，返回索引 0~7 直接 switch，无需 +1 映射
+# 纯字符串数组传入，返回索引 0~6 直接 switch，无需 +1 映射
 # 提示行通过 -Footer1 传入，由 ui 内部绘制（纳入 [2K] 覆盖刷新）
-# 选项1-8 统一经 Invoke-Module 调用（v3.9）
+# 选项 1~6 与 [0] 统一经 Invoke-Module / Invoke-ToolSubmenu 调用
 # ============================================================
 while ($true) {
     # ANSI 清屏（由 ui.ps1 Clear-Screen 实现，不调 cls，兼容 UNC 路径）
@@ -141,12 +192,11 @@ while ($true) {
         "[3]NFO同步：刷新同步与视频同名的NFO文件内部名称",
         "[4]递归扫描NFO，提取信息导出CSV，便于筛查排序",
         "[5]TOP XX 的视频/文件查找和输出_新版双模式",
-        "[6]快捷方式lnk目标路径批量替换（不完善，不认乱码）",
-        "[7]小工具：文件扩展名规整，将大写扩展名批量转换为小写",
-        "[8]小工具：文件名、文件夹内汉字数字批量替换为阿拉伯数字"
+        "[6]视频合并 / 转码工具（支持无损快速合并）",
+        "[0]其他小工具集合"
     )
     # ---- 显示菜单并等待选择 ----
-    # Arrow-Menu（ui.ps1 v4.9：纯字符串数组，返回索引 0~7，ANSI 原地覆盖）
+    # Arrow-Menu（ui.ps1 v7.0：纯字符串数组，返回索引 0~6，ANSI 原地覆盖）
     # 标题+sep 已在上方绘制，Arrow-Menu 从 sep 后空一行开始画选项
     # 提示行由调用方通过 -Footer1 传入字符串（支持按需多一行-Footer2或全留空），_Arrow-Menu_Draw 内部绘制（[2K]覆盖刷新）
     try {
@@ -159,7 +209,7 @@ while ($true) {
             "  $(col_a_text_muted '处理目录：')$(col_a_text $cwdDisplay)"
             ""
         )
-        $sel = Arrow-Menu -Options $mainOptions -DefaultIndex 0 -Footer1 "  $(col_a_line (sep_weak))" -Footer2 "  $(col_a_text '[↑↓]移动  [1-8]直达  [Enter]确认  [q/Esc]退出')" -Header $mainHeader
+        $sel = Arrow-Menu -Options $mainOptions -DefaultIndex 0 -Footer1 "  $(col_a_line (sep_weak))" -Footer2 "  $(col_a_text '[↑↓]移动  [0-6]直达  [Enter]确认  [q/Esc]退出')" -Header $mainHeader
     }
     catch [System.OperationCanceledException] {
         # q / Esc → 退出
@@ -168,7 +218,7 @@ while ($true) {
         return
     }
     # ---- 路由分发（v3.9）----
-    # Arrow-Menu 直接返回索引 0~7，与 switch case 一一对应
+    # Arrow-Menu 直接返回索引 0~6，与 switch case 一一对应
     # 每项统一走 Invoke-Module：存在性检查 + 异常兜底集中在一处
     switch ($sel) {
         0 { Invoke-Module "time_add.ps1" }      # 选项1：视频时长提取 + 重命名
@@ -176,9 +226,8 @@ while ($true) {
         2 { Invoke-Module "nfo_title.ps1" }     # 选项3：NFO 同步
         3 { Invoke-Module "nfo_export.ps1" }    # 选项4：NFO 导出 CSV
         4 { Invoke-Module "top_finder.ps1" }    # 选项5：TOP XX 查找
-        5 { Invoke-Module "lnk_replace.ps1" }   # 选项6：快捷方式路径批量替换
-        6 { Invoke-Module "ext_lower.ps1" }     # 选项7：扩展名大写转小写
-        7 { Invoke-Module "cn_to_arabic.ps1" }  # 选项8：汉字数字转阿拉伯数字
+        5 { Invoke-Module "video_tool.ps1" }    # 选项6：视频合并 / 转码
+        6 { Invoke-ToolSubmenu }                # 选项0：其他小工具集合
         default {  # 兜底（理论上 Arrow-Menu 不会返回越界值）
             Write-Host ""
             Write-Host "$(col_a_warning ('无效选项！')) 收到索引: [$sel]"

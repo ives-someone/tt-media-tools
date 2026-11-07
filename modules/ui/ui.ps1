@@ -65,6 +65,8 @@ v6.4：修复 _Arrow-Menu_Draw 全量刷新时 $totalLines 行数计算笔误。
     少算一行，清屏覆盖不完整，菜单下方残留旧内容。
     修正为 $(if($hasF2){1}else{0})，行数计算与实际绘制对齐。
 v6.5：修复 Select-Horizontal 中 U2（ANSI 光标混用→统一 [Console]::CursorVisible）。
+v7.0：Arrow-Menu 保留调用方给的数字标签，不再按位置重排；
+      数字键直达改为先匹配标签里的数字（支持 [0]），再回退 1~9 位置。
 ============================================================
 #>
 
@@ -329,7 +331,21 @@ function Arrow-Menu {
                         }
                     }
                 }
-                # 回退数字键 1~9
+                # v7.0：先按标签里的数字匹配（支持 [0] 这种非连续编号）
+                if ($key.KeyChar -ge '0' -and $key.KeyChar -le '9') {
+                    $digitKey = [string]$key.KeyChar
+                    for ($j = 0; $j -lt $total; $j++) {
+                        if ($Options[$j] -match '^\[(\d+)\]') {
+                            if ($Matches[1] -eq $digitKey) {
+                                $selected = $j
+                                _Arrow-Menu_Draw -Options $Options -Selected $selected -MenuTop $menuTop -Footer1 $Footer1 -Footer2 $Footer2
+                                [Console]::CursorVisible = $prevCursorVisible
+                                return $j
+                            }
+                        }
+                    }
+                }
+                # 回退数字键 1~9（按位置）
                 if ($key.KeyChar -ge '1' -and $key.KeyChar -le '9') {
                     $idx = [int]$key.KeyChar.ToString() - 1
                     if ($idx -ge 0 -and $idx -lt $total) {
@@ -403,10 +419,12 @@ function _Arrow-Menu_Draw {
             $displayIdx = $i + 1
             # 检测是否含 [x] 格式（调用方已传入带 [] 的 Label）
             $hasLetter = ($Options[$i] -match '\[([a-zA-Z])\]')
-            if ($hasLetter) {
+            $hasNumber = ($Options[$i] -match '^\[(\d+)\]')
+            if ($hasLetter -or $hasNumber) {
+                # v7.0：字母 / 数字标签都由调用方决定，原样显示，
+                #       这样 [0] 这类非连续序号不会被按位置重排成 [8]。
                 $displayText = $Options[$i]
             } else {
-                # 数字模式：剥掉调用方自带的 [n] 前缀，避免双重序号（v6.2新增）
                 $rawText = $Options[$i] -replace '^\[\d+\]\s*', ''
                 $displayText = "[$displayIdx] $rawText"
             }
@@ -432,7 +450,8 @@ function _Arrow-Menu_Draw {
         $oldRow = $MenuTop + 1 + $PreviousSelected
         $oldIdx = $PreviousSelected + 1
         $oldHasLetter = ($Options[$PreviousSelected] -match '\[([a-zA-Z])\]')
-        if ($oldHasLetter) {
+        $oldHasNumber = ($Options[$PreviousSelected] -match '^\[(\d+)\]')
+        if ($oldHasLetter -or $oldHasNumber) {
             $oldDisplay = $Options[$PreviousSelected]
         } else {
             $oldRaw = $Options[$PreviousSelected] -replace '^\[\d+\]\s*', ''
@@ -446,7 +465,8 @@ function _Arrow-Menu_Draw {
         $newRow = $MenuTop + 1 + $Selected
         $newIdx = $Selected + 1
         $newHasLetter = ($Options[$Selected] -match '\[([a-zA-Z])\]')
-        if ($newHasLetter) {
+        $newHasNumber = ($Options[$Selected] -match '^\[(\d+)\]')
+        if ($newHasLetter -or $newHasNumber) {
             $newDisplay = $Options[$Selected]
         } else {
             $newRaw = $Options[$Selected] -replace '^\[\d+\]\s*', ''
