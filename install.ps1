@@ -135,10 +135,11 @@ function Show-FfprobeAdvice {
     Write-Host "  $(col_a_warning '未找到 ffprobe.exe —— 菜单 1 / 2 / 5 会用到它')"
     Show-Blank
     Write-Host "  $(col_a_text '获取方式（任选其一）：')"
-    Write-Host "  $(col_a_text_muted '  a）下载单文件版：')"
-    Write-Host "  $(col_a_text_muted '     https://www.gyan.dev/ffmpeg/builds/')"
-    Write-Host "  $(col_a_text_muted '     选 ffmpeg-release-essentials.zip，取其中的 bin\ffprobe.exe')"
-    Write-Host "  $(col_a_text_muted '  b）或用 winget：winget install Gyan.FFmpeg')"
+    Write-Host "  $(col_a_text_muted '  a）GitHub 构建（国内相对快）：')"
+    Write-Host "  $(col_a_text_muted '     https://github.com/BtbN/FFmpeg-Builds/releases/latest')"
+    Write-Host "  $(col_a_text_muted '     选 Windows x64 的 GPL static 包，取 bin\ffprobe.exe')"
+    Write-Host "  $(col_a_text_muted '  b）gyan.dev：https://www.gyan.dev/ffmpeg/builds/')"
+    Write-Host "  $(col_a_text_muted '  c）或用 winget：winget install Gyan.FFmpeg')"
     Show-Blank
     Write-Host "  $(col_a_text '放置位置（推荐）：')"
     Write-Host "  $(col_a_text_muted "     把 ffprobe.exe 放到  $ToolsDir")"

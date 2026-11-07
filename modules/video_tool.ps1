@@ -290,7 +290,7 @@ function Initialize-Environment {
     $script:Env.Ffmpeg = Resolve-Exe 'ffmpeg'
     if (-not $script:Env.Ffmpeg) { return $false }
 
-    # ffprobe 优先取 ffmpeg 同目录的副本：Gyan / 官方构建都是成对发布的
+    # ffprobe 优先取 ffmpeg 同目录的副本：Gyan / BtbN 等构建都是成对发布的
     $sibling = Join-Path (Split-Path -Parent $script:Env.Ffmpeg) 'ffprobe.exe'
     if (Test-Path -LiteralPath $sibling) { $script:Env.Ffprobe = $sibling }
     else { $script:Env.Ffprobe = Resolve-Exe 'ffprobe' }
@@ -740,9 +740,13 @@ function New-MergeOutputName {
     $prefix = '合并_'
     $extPart = ".$Ext"
 
-    # 预算 = 上限 - 前缀 - 时长 - 扩展名；再按目录长度收紧，并预留 _99 冲突后缀
+    # 拼接名与时长之间留一个空格，避免 "第二段07m21s" 粘在一起；
+    # 拼接名为空（全部是纯时长名）时不加，避免出现 "合并_ 07m21s" 的前导空格。
+    $separator = if ([string]::IsNullOrEmpty($joined)) { '' } else { ' ' }
+
+    # 预算 = 上限 - 前缀 - 分隔空格 - 时长 - 扩展名；再按目录长度收紧，并预留 _99 冲突后缀
     $budget = [math]::Min($script:MaxMergedNameLength, $script:MaxMergedPathLength - $Root.Length) -
-              $prefix.Length - $durationTag.Length - $extPart.Length - 4
+              $prefix.Length - $separator.Length - $durationTag.Length - $extPart.Length - 4
     if ($budget -lt 8) { $budget = 8 }
 
     if ($joined.Length -gt $budget) {
@@ -752,7 +756,7 @@ function New-MergeOutputName {
         $joined = $joined.Substring(0, $cut).TrimEnd(' ', '-', '_', '.', '+')
     }
 
-    $stem = $prefix + $joined + $durationTag
+    $stem = $prefix + $joined + $separator + $durationTag
     $name = "$stem.$Ext"
     $path = Join-Path $Root $name
     $n = 2
@@ -1895,9 +1899,11 @@ while ($true) {
         Write-Host "  $(col_a_text_muted '   视频合并需要 ffmpeg 与 ffprobe 同时可用。')"
         Write-Host
         Write-Host "  $(col_a_text '获取方式（任选其一）：')"
-        Write-Host "  $(col_a_text_muted '   a）winget install Gyan.FFmpeg')"
-        Write-Host "  $(col_a_text_muted '   b）https://www.gyan.dev/ffmpeg/builds/')"
-        Write-Host "  $(col_a_text_muted '      下载 ffmpeg-release-essentials.zip')"
+        Write-Host "  $(col_a_text_muted '   a）GitHub 构建（国内相对快）：')"
+        Write-Host "  $(col_a_text_muted '      https://github.com/BtbN/FFmpeg-Builds/releases/latest')"
+        Write-Host "  $(col_a_text_muted '      选 Windows x64 的 GPL static 包')"
+        Write-Host "  $(col_a_text_muted '      解压后取 bin 下的 ffmpeg.exe / ffprobe.exe')"
+        Write-Host "  $(col_a_text_muted '   b）winget install Gyan.FFmpeg')"
         Write-Host
         Write-Host "  $(col_a_text '放置位置（推荐）：')"
         Write-Host "  $(col_a_text_muted "   把 ffmpeg.exe / ffprobe.exe 放进  $($script:ToolsDir)")"

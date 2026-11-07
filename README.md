@@ -59,16 +59,18 @@
 
 菜单 1 / 2 / 5 需要 `ffprobe.exe` 读取视频真实时长、码率、分辨率；菜单 6 的视频合并 / 转码同时还要 `ffmpeg.exe`（ffprobe 读参数、ffmpeg 负责拼接与转码）。
 
-**本工具集不附带该程序**：完整版约 80~120 MB，且属于 GPL 许可，不适合随脚本分发。
+**本工具集不附带该程序**：完整包约 80~200 MB（视构建而定），且属于 GPL 许可，不适合随脚本分发。
 
 **获取**（任选其一）：
 
-- 下载单文件版：<https://www.gyan.dev/ffmpeg/builds/> → `ffmpeg-release-essentials.zip` → 取其中的 `bin\ffprobe.exe`
+- **GitHub 构建（国内相对快）**：<https://github.com/BtbN/FFmpeg-Builds/releases/latest>
+  在 `Windows (x86_64)` 下选 **GPL, static** 的 zip（文件名形如 `ffmpeg-n9.0-latest-win64-gpl-9.0.zip`），解压后取 `bin\ffmpeg.exe` 与 `bin\ffprobe.exe`
+- 备用站点：<https://www.gyan.dev/ffmpeg/builds/> → `ffmpeg-release-essentials.zip` → 取其中的 `bin\ffprobe.exe`
 - 或用 winget：`winget install Gyan.FFmpeg`
 
 **放置**（推荐方式）：
 
-1. 把 `ffprobe.exe` 放进本工具集的 `tools\` 目录
+1. 把 `ffprobe.exe`（菜单 6 还需要 `ffmpeg.exe`）放进本工具集的 `tools\` 目录
 2. 双击 `install.bat`
 3. 脚本会自动把 `tools\` 加入用户 PATH
 
