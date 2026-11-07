@@ -55,6 +55,7 @@
 | 3 | `video_tool` | 配置文件里数值被写成 `21.0` 这种浮点形式 | 回车采用默认值时按整数返回，JSON 保持 `21` |
 | 4 | `video_tool` | 批量转码时控制台被 `Non-monotonic DTS` / `Duplicated SDTP atom` 等无害警告刷屏 | ffmpeg 日志级别统一为 `error`（进度仍由 `-stats` 输出），并补 `-nostdin`，防止批量运行时 ffmpeg 读取键盘输入 |
 | 5 | `video_tool` | 合并输出名里时长与拼接名粘连（如 `合并_第二段07m21s`） | 拼接名与时长之间补一个空格；拼接名为空（全部是纯时长名）时不补，避免前导空格 |
+| 6 | `video_tool` | 转码到子文件夹 / 源文件夹时，输出文件名末尾被截掉（如 `00m20s` 变成 `00m2`） | `New-OutputPath` 移除 30 字符截断，转码完整保留原名；合并名仍走 `New-MergeOutputName` 的独立长度预算 |
 
 ---
 
@@ -76,7 +77,7 @@
 |---|---|---|---|
 | `tt.ps1` | v4.1 | 237 | ✅ |
 | `modules\ui\ui.ps1` | v7.0 | 702 | ✅ |
-| `modules\video_tool.ps1` | v1.1 | 1966 | ✅ |
+| `modules\video_tool.ps1` | v1.1 | 1968 | ✅ |
 
 ---
 

@@ -789,9 +789,11 @@ function New-OutputPath {
         [string]$Prefix = '',
         [string]$Suffix = ''
     )
+    # 转码保留完整原名，不做按长度截断：原名本身是合法文件名，
+    # 截断会丢掉末尾的时长标记（如 "00m20s" 变成 "00m2"）。
+    # 合并名的长度预算在 New-MergeOutputName 里单独处理。
     $base = [System.IO.Path]::GetFileNameWithoutExtension($FirstName)
-    if ($base.Length -gt 30) { $base = $base.Substring(0, 30) }
-    # 合并用前缀（合并_原名）；转码放源文件夹用后缀（原名_转码），
+    # 转码放源文件夹用后缀（原名_转码），
     # 这样按文件名排序时原片与转码片相邻，方便对比参数。
     $stem = "${Prefix}${base}${Suffix}"
     $name = "${stem}.$Ext"
