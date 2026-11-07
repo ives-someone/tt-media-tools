@@ -8,10 +8,12 @@ TT_Media_Tools 环境管理（由 install.bat 调用，也可直接运行）
   2. 检查 ffprobe.exe 是否可用，缺失时给出下载指引
   3. 若用户把 ffprobe.exe 放在 tools\ 目录，自动把 tools\ 加入 PATH
 
-版本：v2.1（2026-11-05）
+版本：v2.2（2026-11-07）
   v2.0 加入 ffprobe 检测与 tools 目录支持
   v2.1 界面统一到 ui.ps1（标题块 + col_a_* + Arrow-Menu 单键菜单），
        去掉 Read-Host 回车交互；ui.ps1 缺失时降级为单键读取。
+  v2.2 增加 ffmpeg 检测与提示：菜单 6 的视频合并 / 转码需要
+       ffmpeg.exe + ffprobe.exe，两者缺一不可。
 ============================================================
 #>
 
@@ -130,22 +132,43 @@ function Get-FfprobeState {
     return [PSCustomObject]@{ Source = 'none'; Detail = '未找到' }
 }
 
+function Get-FfmpegState {
+    $cmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return [PSCustomObject]@{ Source = 'path'; Detail = $cmd.Source }
+    }
+    $inTools = Join-Path $ToolsDir 'ffmpeg.exe'
+    if (Test-Path -LiteralPath $inTools) {
+        if (Test-PathHas -PathValue (Get-UserPath) -Entry $ToolsDir) {
+            return [PSCustomObject]@{ Source = 'pending'; Detail = '已在 tools\ 并加入 PATH，重开终端后生效' }
+        }
+        return [PSCustomObject]@{ Source = 'tools'; Detail = $inTools }
+    }
+    $inRoot = Join-Path $ToolDir 'ffmpeg.exe'
+    if (Test-Path -LiteralPath $inRoot) {
+        return [PSCustomObject]@{ Source = 'tooldir'; Detail = $inRoot }
+    }
+    return [PSCustomObject]@{ Source = 'none'; Detail = '未找到' }
+}
+
+# ffprobe 缺失时的提示；菜单 6 还需要 ffmpeg，这里一并说明
 function Show-FfprobeAdvice {
     Write-Host "  $(col_a_line ('-' * 58))"
-    Write-Host "  $(col_a_warning '未找到 ffprobe.exe —— 菜单 1 / 2 / 5 会用到它')"
+    Write-Host "  $(col_a_warning '未找到 ffprobe.exe —— 菜单 1 / 2 / 5 / 6 会用到它')"
+    Write-Host "  $(col_a_text_muted '菜单 6 的视频合并 / 转码还需要 ffmpeg.exe，两者缺一不可')"
     Show-Blank
     Write-Host "  $(col_a_text '获取方式（任选其一）：')"
     Write-Host "  $(col_a_text_muted '  a）GitHub 构建（国内相对快）：')"
     Write-Host "  $(col_a_text_muted '     https://github.com/BtbN/FFmpeg-Builds/releases/latest')"
-    Write-Host "  $(col_a_text_muted '     选 Windows x64 的 GPL static 包，取 bin\ffprobe.exe')"
+    Write-Host "  $(col_a_text_muted '     选 Windows x64 的 GPL static 包，取 bin\ffprobe.exe（菜单 6 还要 ffmpeg.exe）')"
     Write-Host "  $(col_a_text_muted '  b）gyan.dev：https://www.gyan.dev/ffmpeg/builds/')"
     Write-Host "  $(col_a_text_muted '  c）或用 winget：winget install Gyan.FFmpeg')"
     Show-Blank
     Write-Host "  $(col_a_text '放置位置（推荐）：')"
-    Write-Host "  $(col_a_text_muted "     把 ffprobe.exe 放到  $ToolsDir")"
+    Write-Host "  $(col_a_text_muted ('     把 ffprobe.exe / ffmpeg.exe 放到  ' + $ToolsDir))"
     Write-Host "  $(col_a_text_muted '     然后重新运行本菜单的第 1 项，会自动把 tools\ 加入 PATH')"
     Show-Blank
-    Write-Host "  $(col_a_text_muted '注意：shared 版本的 ffprobe.exe 只有几百 KB，')"
+    Write-Host "  $(col_a_text_muted '注意：shared 版本的 ffprobe.exe / ffmpeg.exe 只有几百 KB，')"
     Write-Host "  $(col_a_text_muted '      必须连同 avcodec-*.dll 等一起放入 tools\，否则无法运行。')"
     Write-Host "  $(col_a_line ('-' * 58))"
 }
@@ -199,6 +222,27 @@ function Invoke-Install {
             Write-Host "  $(col_a_warning '· 尚未找到 ffprobe.exe')"
             Show-Blank
             Show-FfprobeAdvice
+        }
+    }
+
+    $fm = Get-FfmpegState
+    switch ($fm.Source) {
+        'path' {
+            Write-Host "  $(col_a_success '✓ ffmpeg 可用：')$(col_a_text $fm.Detail)"
+        }
+        'tools' {
+            if (Add-PathEntry -Entry $ToolsDir) {
+                Write-Host "  $(col_a_success '✓ 发现 tools\ffmpeg.exe，已把 tools\ 加入用户 PATH')"
+                $changed += 'tools 目录'
+            } else {
+                Write-Host "  $(col_a_text_muted '· tools\ 已在用户 PATH 中')"
+            }
+        }
+        'tooldir' {
+            Write-Host "  $(col_a_success '✓ 工具目录内已有 ffmpeg.exe（随工具目录一起生效）')"
+        }
+        default {
+            Write-Host "  $(col_a_warning '· 尚未找到 ffmpeg.exe（菜单 6 的视频合并 / 转码需要）')"
         }
     }
 
@@ -298,6 +342,16 @@ while ($true) {
         default   { $ffLine = "$(col_a_warning '未找到（菜单 1 / 2 / 5 需要）')" }
     }
     Write-Host "  $(col_a_text_muted 'ffprobe ：')$ffLine"
+
+    $fm = Get-FfmpegState
+    switch ($fm.Source) {
+        'path'    { $ffmLine = "$(col_a_success '已找到')  $(col_a_text $fm.Detail)" }
+        'pending' { $ffmLine = "$(col_a_text_muted '在 tools\ 内，重开终端后生效')" }
+        'tools'   { $ffmLine = "$(col_a_success '在 tools\ 目录内')  $(col_a_text_muted '（尚未加入 PATH）')" }
+        'tooldir' { $ffmLine = "$(col_a_success '在工具目录内')" }
+        default   { $ffmLine = "$(col_a_warning '未找到（菜单 6 需要）')" }
+    }
+    Write-Host "  $(col_a_text_muted 'ffmpeg  ：')$ffmLine"
     Show-Blank
     Write-Host "  $(col_a_line (sep))"
 

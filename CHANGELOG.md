@@ -205,7 +205,7 @@
 | `modules\cn_to_arabic.ps1` | v2.0 | 286 | ✅ |
 | `modules\lnk_replace.ps1` | v2.0 | 413 | ✅ |
 | `install.ps1` | v2.0 | 284 | ✅ |
-| `tools\把 ffprobe.exe 放这里.txt` | — | — | 放置说明（不含二进制） |
+| `tools\放置说明.txt` | — | — | 放置说明（不含二进制） |
 
 ---
 

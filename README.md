@@ -55,7 +55,7 @@
 - `tt.bat` 会**优先用 PowerShell 7** 启动，找不到 `pwsh` 时自动回退到系统自带的 PowerShell 5.1。
 - 不建议直接右键打开终端：SMB 网络共享（UNC 路径）下原生右键可能定位不到目标目录，用 `Shift` + 右键「在此处打开 PowerShell 窗口」更稳。
 
-### 关于 ffprobe
+### 关于 ffprobe / ffmpeg
 
 菜单 1 / 2 / 5 需要 `ffprobe.exe` 读取视频真实时长、码率、分辨率；菜单 6 的视频合并 / 转码同时还要 `ffmpeg.exe`（ffprobe 读参数、ffmpeg 负责拼接与转码）。
 
@@ -128,7 +128,7 @@
 | `tt.ps1` | 主菜单，聚合全部子功能 |
 | `install.bat` | 环境管理入口（双击运行），实际逻辑在 `install.ps1` |
 | `install.ps1` | 环境管理逻辑：加入 / 移出用户 PATH、检测 ffprobe、支持 `tools\` 目录 |
-| `tools\` | 放置 `ffprobe.exe` 的目录（其中的 exe / dll 不进仓库） |
+| `tools\` | 放置 `ffmpeg.exe` / `ffprobe.exe` 的目录（其中的 exe / dll 不进仓库） |
 | `modules\*.ps1` | 9 个子功能脚本 |
 | `modules\ui\*.ps1` | 公共 UI 框架与配色预览工具 |
 | `blacklist.txt` | 扫描黑名单模板（仅 `top_finder.ps1` 使用） |
@@ -163,7 +163,7 @@
 > 本项目为个人自用、AI 辅助完成，并非专业工业级软件，使用前请知悉：
 
 1. **仅面向 Windows**，不支持 Linux / macOS。
-2. **需要自行准备 `ffprobe.exe`**，工具不携带、不自动下载。
+2. **需要自行准备 `ffprobe.exe`；菜单 6 还需要 `ffmpeg.exe`**，工具不携带、不自动下载。
 3. **撤销仅在本次运行会话内有效**。关闭窗口后无法内存撤销；NFO 有 `.bak` 备份可手动还原，文件名只能依靠预先导出的映射文本。
 4. **黑名单仅 `top_finder.ps1` 支持**，改名类脚本不支持。
 5. **`top_finder.ps1` 的 CSV 数据源仅交互模式可用**，非交互模式只做真实文件扫描。
