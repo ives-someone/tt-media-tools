@@ -27,6 +27,15 @@
 | 7 | `video_tool` | **视频转码** —— 逐个文件按合并同一套预设重编码，保持原分辨率 / 帧率；音频为 AAC 时复制、其余转 AAC；输出可选「转码成果」子文件夹或源文件夹 |
 | 8 | `video_tool` | **配置分段** —— `merge` / `transcode` 各自记忆编码偏好与 `outputMode`；老配置缺 `transcode` 段时自动继承 `merge` |
 | 9 | `video_tool` | **处理范围** —— 扫描后可选「全部」或「指定序号」（`1-3,5`）；合并按输入顺序拼接并在执行前列出确认，转码共用同一选择 |
+| 10 | `video_tool` | **暂停 / 继续** —— 转码或有损合并时按 `p` 挂起 ffmpeg，再按 `p` 恢复；挂起只冻结进程，输出文件不会损坏 |'@
+
+Edit-File -Path $changelog -Bom $false -Old '| `modules\video_tool.ps1` | v1.1 | 1968 | ✅ |' -New '| `modules\video_tool.ps1` | v1.2 | 2062 | ✅ |'
+
+$video = Join-Path $root 'modules\video_tool.ps1'
+Edit-File -Path $video -Bom $true -Old 'v1.1（2026-11-05）：视频合并 / 转码工具，主菜单第 9 项。' -New @'
+v1.1（2026-11-05）：视频合并 / 转码工具，主菜单第 9 项。
+v1.2（2026-11-08）：新增 p 暂停 / 继续（挂起 ffmpeg 进程），
+       恢复后从冻结处继续写，输出文件不会损坏。
 
 ---
 

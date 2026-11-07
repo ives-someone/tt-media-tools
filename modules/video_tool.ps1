@@ -399,6 +399,103 @@ function Format-CommandLine {
     return ('"' + $Exe + '" ' + ($parts -join ' '))
 }
 
+# 把参数数组拼成 CreateProcess 能解析的命令行（与 Format-CommandLine 同一套引号规则）
+function ConvertTo-ProcessArgumentString {
+    param([string[]]$Arguments)
+    $parts = foreach ($a in $Arguments) {
+        $s = [string]$a
+        if ($s -match '[\s"]') { '"' + ($s -replace '"', '\"') + '"' } else { $s }
+    }
+    return ($parts -join ' ')
+}
+
+# ============================================================
+# 区块三·B：ffmpeg 进程（支持 p 暂停 / 继续）
+# ------------------------------------------------------------
+# 为什么不用 `& ffmpeg @argv`：那条路会一直阻塞到 ffmpeg 退出，
+# 脚本没有机会读键盘，也就无法暂停。这里改成 Process + 轮询：
+#   - 输出不重定向，ffmpeg 的 -stats 进度条仍直接写控制台
+#   - 每 200ms 检查一次键盘，按 p 调用 NtSuspendProcess / NtResumeProcess
+#   - 挂起只是冻结进程，文件句柄与写入位置都保留，恢复后继续写，
+#     输出文件不会损坏；只有强杀才会留下半成品
+# ============================================================
+function Invoke-FfmpegProcess {
+    param(
+        [string]$Exe,
+        [string[]]$Arguments,
+        [switch]$AllowPause
+    )
+
+    # 懒加载：PowerShell 5.1 没有内置的进程挂起 API，用 ntdll 的未文档化函数
+    if (-not ('DshVideoTool.Native' -as [type])) {
+        $nativeCode = '[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(System.IntPtr processHandle); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(System.IntPtr processHandle);'
+        try { Add-Type -Namespace DshVideoTool -Name Native -MemberDefinition $nativeCode -ErrorAction Stop } catch { }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = (ConvertTo-ProcessArgumentString -Arguments $Arguments)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $false
+    $psi.RedirectStandardOutput = $false
+    $psi.RedirectStandardError = $false
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+
+    $canPause = $false
+    if ($AllowPause -and ('DshVideoTool.Native' -as [type])) {
+        try {
+            if (-not [Console]::IsInputRedirected) { $canPause = $true }
+        } catch { $canPause = $false }
+    }
+    if ($canPause) {
+        Write-Host "  $(col_a_text_muted '[p] 暂停 / 继续')"
+    }
+
+    $suspended = $false
+    try {
+        if ($canPause) {
+            while (-not $proc.WaitForExit(200)) {
+                try {
+                    if ([Console]::KeyAvailable) {
+                        $key = [Console]::ReadKey($true)
+                        if ($key.Key -eq [ConsoleKey]::P) {
+                            if (-not $suspended) {
+                                [void][DshVideoTool.Native]::NtSuspendProcess($proc.Handle)
+                                $suspended = $true
+                                Write-Host "  $(col_a_warning '⏸ 已暂停，按 p 继续')"
+                            } else {
+                                [void][DshVideoTool.Native]::NtResumeProcess($proc.Handle)
+                                $suspended = $false
+                                Write-Host "  $(col_a_success '▶ 继续')"
+                            }
+                        }
+                    }
+                } catch {
+                    # 终端不支持 KeyAvailable（重定向、部分宿主）时不再尝试暂停
+                    $canPause = $false
+                }
+            }
+        } else {
+            $proc.WaitForExit()
+        }
+        if (-not $proc.HasExited) { $proc.WaitForExit() }
+        return $proc.ExitCode
+    } finally {
+        # Ctrl+C / 异常退出时：先恢复挂起的进程，再确保它被终止，避免残留
+        if ($suspended) {
+            try { [void][DshVideoTool.Native]::NtResumeProcess($proc.Handle) } catch { }
+        }
+        if (-not $proc.HasExited) {
+            try { $proc.Kill() } catch { }
+            try { [void]$proc.WaitForExit(3000) } catch { }
+        }
+        $proc.Dispose()
+    }
+}
+
 # ============================================================
 # 区块四：ffprobe 元数据
 # 只取合并需要的字段；ffprobe 报错（损坏文件）返回 $null 由调用方跳过
@@ -994,8 +1091,7 @@ function Invoke-LosslessMerge {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $code = 0
     try {
-        & $script:Env.Ffmpeg @argv
-        $code = $LASTEXITCODE
+        $code = Invoke-FfmpegProcess -Exe $script:Env.Ffmpeg -Arguments $argv -AllowPause
     } catch {
         $code = -1
     }
@@ -1057,8 +1153,7 @@ function Invoke-ReencodeMerge {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $code = 0
     try {
-        & $script:Env.Ffmpeg @argv
-        $code = $LASTEXITCODE
+        $code = Invoke-FfmpegProcess -Exe $script:Env.Ffmpeg -Arguments $argv -AllowPause
     } catch {
         $code = -1
     }
@@ -1698,8 +1793,7 @@ function Invoke-FileTranscode {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $code = 0
     try {
-        & $script:Env.Ffmpeg @argv
-        $code = $LASTEXITCODE
+        $code = Invoke-FfmpegProcess -Exe $script:Env.Ffmpeg -Arguments $argv -AllowPause
     } catch {
         $code = -1
     }
