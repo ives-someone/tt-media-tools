@@ -8,6 +8,8 @@ v1.3（2026-11-09）：小文件并发转码——短边 ≤1080 的文件两两
 v1.4（2026-11-09）：转码编码菜单增加「一键按上次」，默认选中，
        沿用上次参数与输出位置并跳过确认直接开始；
        QSV 检测结果缓存进 config.env，打开工具不再重复试编码。
+v1.5（2026-11-09）：并发转码恢复进度显示——用 -progress 文件解析
+       各任务的百分比与倍速，单行汇总刷新，两个任务都能看到进度。
     合并：多段首尾拼接，无损 copy 优先，参数不一致时改有损重编码。
     转码：逐个文件按预设重编码，与合并共用 QSV / CRF 参数体系。
 
@@ -1904,6 +1906,26 @@ function Invoke-FileTranscode {
     return [PSCustomObject]@{ ExitCode = $code; Elapsed = $sw.Elapsed; Message = '' }
 }
 
+# 读取 ffmpeg -progress 文件，返回百分比与倍速（文件还没写入时返回 $null）
+function Get-FfmpegProgressPercent {
+    param([string]$Path, [double]$Duration)
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $lines = Get-Content -LiteralPath $Path -Tail 24 -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    $us = $null
+    $speed = ''
+    foreach ($line in $lines) {
+        if ($line -match '^out_time_us=(\d+)') { $us = [double]$Matches[1] }
+        elseif ($line -match '^speed=(\S+)') { $speed = $Matches[1] }
+    }
+    if ($null -eq $us -or $Duration -le 0) { return $null }
+    $pct = [math]::Min(100, [math]::Max(0, [math]::Round($us / 1000000 / $Duration * 100)))
+    return [PSCustomObject]@{ Percent = [int]$pct; Speed = $speed }
+}
+
 # ============================================================
 # 并发转码组：≤1080p 的文件两两并行，2K/4K 单文件串行
 # ------------------------------------------------------------
@@ -1936,9 +1958,11 @@ function Invoke-TranscodeGroup {
             continue
         }
 
-        # 并发时去掉 -stats，避免两个进度条互相刷屏；错误仍由 -loglevel error 输出
+        # 并发时不开 -stats（两个进度条会互相刷屏），改用 -progress 写独立文件，
+        # 主循环读取 out_time_us / speed 后刷新成一行汇总进度。
+        $progress = Join-Path ([System.IO.Path]::GetTempPath()) ("tt_progress_" + [guid]::NewGuid().ToString('N') + ".txt")
         $argv = @($argv | Where-Object { $_ -ne '-stats' })
-        $argv = @('-nostats') + $argv
+        $argv = @('-nostats', '-progress', $progress) + $argv
 
         $argString = ConvertTo-ProcessArgumentString -Arguments $argv
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1956,9 +1980,10 @@ function Invoke-TranscodeGroup {
         }
 
         $jobs += [PSCustomObject]@{
-            Process = $proc
-            Info    = $info
-            OutPath = $outPath
+            Process  = $proc
+            Info     = $info
+            OutPath  = $outPath
+            Progress = $progress
         }
         $parallelHint = if ($jobs.Count -gt 1) { '（并行）' } else { '' }
         Write-Host "  $(col_a_text_muted ("  [$idx/$TotalCount] " + (Format-Truncated -Text $info.Name -MaxWidth 40) + $parallelHint))"
@@ -1983,9 +2008,24 @@ function Invoke-TranscodeGroup {
     }
 
     $suspended = $false
+    $lastRefresh = [datetime]::MinValue
+    $progressShown = $false
     while ($true) {
         $running = @($jobs | Where-Object { -not $_.Process.HasExited })
         if ($running.Count -eq 0) { break }
+
+        # 每 500ms 用一行汇总刷新两个并行任务的进度与倍速
+        if (-not $suspended -and ((Get-Date) - $lastRefresh).TotalMilliseconds -ge 500) {
+            $parts = foreach ($j in $jobs) {
+                $name = Format-Truncated -Text $j.Info.Name -MaxWidth 18
+                $pr = Get-FfmpegProgressPercent -Path $j.Progress -Duration $j.Info.Duration
+                if ($null -eq $pr) { "$name …" }
+                else { "$name $($pr.Percent)% $($pr.Speed)" }
+            }
+            Write-Host ("`r  " + ($parts -join '  ｜  ')) -NoNewline
+            $progressShown = $true
+            $lastRefresh = Get-Date
+        }
 
         if ($canPause) {
             try {
@@ -2000,9 +2040,12 @@ function Invoke-TranscodeGroup {
                         }
                         $suspended = -not $suspended
                         if ($suspended) {
+                            Write-Host ''
                             Write-Host "  $(col_a_warning '⏸ 已暂停全部并行任务，按 p 继续')"
                         } else {
+                            Write-Host ''
                             Write-Host "  $(col_a_success '▶ 继续')"
+                            $lastRefresh = [datetime]::MinValue
                         }
                     }
                 }
@@ -2012,6 +2055,8 @@ function Invoke-TranscodeGroup {
         }
         Start-Sleep -Milliseconds 200
     }
+
+    if ($progressShown) { Write-Host '' }
 
     foreach ($job in $jobs) {
         $code = $job.Process.ExitCode
@@ -2042,6 +2087,7 @@ function Invoke-TranscodeGroup {
             $failures += [PSCustomObject]@{ Name = $job.Info.Name; Reason = $reason }
         }
 
+        Remove-Item -LiteralPath $job.Progress -Force -ErrorAction SilentlyContinue
         $job.Process.Dispose()
     }
 
