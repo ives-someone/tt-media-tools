@@ -5,6 +5,9 @@ v1.2（2026-11-08）：新增 p 暂停 / 继续（挂起 ffmpeg 进程），
        恢复后从冻结处继续写，输出文件不会损坏。
 v1.3（2026-11-09）：小文件并发转码——短边 ≤1080 的文件两两并行，
        2K/4K 逐个串行；并发时按 p 同时暂停 / 恢复全部任务。
+v1.4（2026-11-09）：转码编码菜单增加「一键按上次」，默认选中，
+       沿用上次参数与输出位置并跳过确认直接开始；
+       QSV 检测结果缓存进 config.env，打开工具不再重复试编码。
     合并：多段首尾拼接，无损 copy 优先，参数不一致时改有损重编码。
     转码：逐个文件按预设重编码，与合并共用 QSV / CRF 参数体系。
 
@@ -141,6 +144,13 @@ function Get-DefaultConfig {
     return [ordered]@{
         merge     = New-EncodingDefaults
         transcode = $transcode
+        env       = [ordered]@{
+            ffmpegPath    = ''
+            ffmpegVersion = ''
+            qsvHevc       = $false
+            qsvH264       = $false
+            checkedAt     = ''
+        }
         _help     = 'icq 18-28 | cbrMbps 1-50 | crf 0-51 (lower = better) | preset veryfast..veryslow | outputMode subfolder|source'
     }
 }
@@ -236,6 +246,14 @@ function Import-ToolConfig {
         }
     }
 
+    if ($null -ne $obj.env) {
+        if ($obj.env.ffmpegPath) { $cfg['env']['ffmpegPath'] = [string]$obj.env.ffmpegPath }
+        if ($obj.env.ffmpegVersion) { $cfg['env']['ffmpegVersion'] = [string]$obj.env.ffmpegVersion }
+        if ($obj.env.checkedAt) { $cfg['env']['checkedAt'] = [string]$obj.env.checkedAt }
+        if ($obj.env.qsvHevc -is [bool]) { $cfg['env']['qsvHevc'] = [bool]$obj.env.qsvHevc }
+        if ($obj.env.qsvH264 -is [bool]) { $cfg['env']['qsvH264'] = [bool]$obj.env.qsvH264 }
+    }
+
     return $cfg
 }
 
@@ -305,8 +323,41 @@ function Initialize-Environment {
         if ($line -match 'version\s+(\S+)') { $script:Env.Version = $Matches[1] }
     } catch { $script:Env.Version = '' }
 
-    $script:Env.QsvHevc = Test-QsvEncoder -Codec 'hevc'
-    $script:Env.QsvH264 = Test-QsvEncoder -Codec 'h264'
+    # QSV 真实试编码每次要启动 ffmpeg 1~3 秒；把结果缓存进 config，
+    # 只有 ffmpeg 路径/版本变化、缓存超过 7 天或缓存无效时才重新检测。
+    $cache = $null
+    if ($null -ne $script:Config -and $script:Config.Contains('env')) { $cache = $script:Config['env'] }
+
+    $cacheFresh = $false
+    if ($null -ne $cache) {
+        $checked = [datetime]::MinValue
+        $checkedOk = $false
+        if (-not [string]::IsNullOrWhiteSpace([string]$cache['checkedAt'])) {
+            $checkedOk = [datetime]::TryParse([string]$cache['checkedAt'], [ref]$checked)
+        }
+        if ($checkedOk -and
+            [string]$cache['ffmpegPath'] -eq [string]$script:Env.Ffmpeg -and
+            [string]$cache['ffmpegVersion'] -eq [string]$script:Env.Version -and
+            ((Get-Date) - $checked).TotalDays -lt 7) {
+            $cacheFresh = $true
+        }
+    }
+
+    if ($cacheFresh) {
+        $script:Env.QsvHevc = [bool]$cache['qsvHevc']
+        $script:Env.QsvH264 = [bool]$cache['qsvH264']
+    } else {
+        $script:Env.QsvHevc = Test-QsvEncoder -Codec 'hevc'
+        $script:Env.QsvH264 = Test-QsvEncoder -Codec 'h264'
+        if ($null -ne $cache) {
+            $cache['ffmpegPath'] = [string]$script:Env.Ffmpeg
+            $cache['ffmpegVersion'] = [string]$script:Env.Version
+            $cache['qsvHevc'] = [bool]$script:Env.QsvHevc
+            $cache['qsvH264'] = [bool]$script:Env.QsvH264
+            $cache['checkedAt'] = (Get-Date).ToString('o')
+            [void](Save-ToolConfig -Config $script:Config)
+        }
+    }
 
     return $true
 }
@@ -1225,21 +1276,59 @@ function Read-NumberInput {
 }
 
 # 有损模式的三个设置菜单。q/Esc 时返回 $null（由调用方回模块开头）
+# 从配置段直接生成一套设置对象（“一键按上次”和手动设置的最终结果共用）
+function New-SettingsFromConfig {
+    param($Config, [string]$Section)
+    $cfg = $Config[$Section]
+    return [PSCustomObject]@{
+        Codec     = $cfg['codec']
+        RateMode  = $cfg['rateMode']
+        Icq       = [int]$cfg['icq']
+        CbrMbps   = [double]$cfg['cbrMbps']
+        Crf       = [int]$cfg['crf']
+        QsvPreset = $cfg['qsvPreset']
+        CpuPreset = $cfg['cpuPreset']
+        AudioKbps = [int]$cfg['audioBitrateKbps']
+    }
+}
+
 function Read-ReencodeSettings {
-    param($Config, [string]$Section = 'merge')
+    param(
+        $Config,
+        [string]$Section = 'merge',
+        [switch]$AllowQuickLast,
+        [string]$OutputLabel = ''
+    )
 
     $cfg = $Config[$Section]
 
     # ---- 选单2：编码格式 ----
     Show-MenuTitle '编码格式'
-    $codecDefault = if ($cfg['codec'] -eq 'h264') { 1 } else { 0 }
-    $codecOpts = @(
-        @{ Label = '[5]H.265（画质优先）'; Value = 'hevc' }
-        @{ Label = '[4]H.264（兼容优先）'; Value = 'h264' }
-        @{ Label = '[q]取消'; Value = 'cancel' }
-    )
+    if ($AllowQuickLast) {
+        $lastSettings = New-SettingsFromConfig -Config $Config -Section $Section
+        $lastText = Get-RateModeText -Settings $lastSettings
+        $quickLabel = "[1] 一键按上次（$lastText · $OutputLabel）"
+        $codecOpts = @(
+            @{ Label = $quickLabel; Value = 'last' }
+            @{ Label = '[2] H.265（画质优先）'; Value = 'hevc' }
+            @{ Label = '[3] H.264（兼容优先）'; Value = 'h264' }
+            @{ Label = '[q]取消'; Value = 'cancel' }
+        )
+        $codecDefault = 0
+    } else {
+        $codecDefault = if ($cfg['codec'] -eq 'h264') { 1 } else { 0 }
+        $codecOpts = @(
+            @{ Label = '[5]H.265（画质优先）'; Value = 'hevc' }
+            @{ Label = '[4]H.264（兼容优先）'; Value = 'h264' }
+            @{ Label = '[q]取消'; Value = 'cancel' }
+        )
+    }
     $codecPick = Select-Horizontal -Options $codecOpts -Prompt '' -InitialIndex $codecDefault
     if ($null -eq $codecPick -or $codecPick -eq 'cancel') { return $null }
+
+    if ($codecPick -eq 'last') {
+        return [PSCustomObject]@{ QuickLast = $true; Settings = $lastSettings }
+    }
 
     # ---- 选单3：编码方式 ----
     $rateMode = $null
@@ -1989,8 +2078,18 @@ function Invoke-TranscodeWorkflow {
     if ($null -eq $selected) { return }
     $infos = @($selected)
 
-    $settings = Read-ReencodeSettings -Config $Config -Section 'transcode'
+    # “一键按上次”需要把上次的输出位置一起显示出来
+    $lastOutMode = $Config['transcode']['outputMode']
+    $lastOutShort = if ($lastOutMode -eq 'source') { '源文件夹' } else { '转码成果子文件夹' }
+
+    $settings = Read-ReencodeSettings -Config $Config -Section 'transcode' -AllowQuickLast -OutputLabel $lastOutShort
     if ($null -eq $settings) { return }
+
+    $quickLast = $false
+    if ($settings.PSObject.Properties.Name -contains 'QuickLast' -and $settings.QuickLast) {
+        $quickLast = $true
+        $settings = $settings.Settings
+    }
 
     $encoder = Resolve-VideoEncoder -Codec $settings.Codec -RateMode $settings.RateMode
     if (-not $encoder) {
@@ -2001,20 +2100,27 @@ function Invoke-TranscodeWorkflow {
     }
 
     # ---- 输出位置 ----
-    Show-MenuTitle '输出位置'
-    Write-Host "  $(col_a_text_muted '子文件夹保留原名；源文件夹用 _转码 后缀')"
-    Write-Host
-    $modeDefault = if ($Config['transcode']['outputMode'] -eq 'source') { 1 } else { 0 }
-    $outModeOpts = @(
-        @{ Label = '[1]转码成果子文件夹'; Value = 'subfolder' }
-        @{ Label = '[2]源文件夹'; Value = 'source' }
-        @{ Label = '[q]取消'; Value = 'cancel' }
-    )
-    $outMode = Select-Horizontal -Options $outModeOpts -Prompt '' -InitialIndex $modeDefault
-    if ($null -eq $outMode -or $outMode -eq 'cancel') { return }
+    if ($quickLast) {
+        $outMode = $Config['transcode']['outputMode']
+        if ($outMode -notin @('subfolder', 'source')) { $outMode = 'subfolder' }
+        Write-Host "  $(col_a_text_muted '输出位置：')$(col_a_text $lastOutShort)$(col_a_text_muted '（按上次，开始后不再确认）')"
+        Write-Host
+    } else {
+        Show-MenuTitle '输出位置'
+        Write-Host "  $(col_a_text_muted '子文件夹保留原名；源文件夹用 _转码 后缀')"
+        Write-Host
+        $modeDefault = if ($Config['transcode']['outputMode'] -eq 'source') { 1 } else { 0 }
+        $outModeOpts = @(
+            @{ Label = '[1]转码成果子文件夹'; Value = 'subfolder' }
+            @{ Label = '[2]源文件夹'; Value = 'source' }
+            @{ Label = '[q]取消'; Value = 'cancel' }
+        )
+        $outMode = Select-Horizontal -Options $outModeOpts -Prompt '' -InitialIndex $modeDefault
+        if ($null -eq $outMode -or $outMode -eq 'cancel') { return }
 
-    $Config['transcode']['outputMode'] = $outMode
-    [void](Save-ToolConfig -Config $Config)
+        $Config['transcode']['outputMode'] = $outMode
+        [void](Save-ToolConfig -Config $Config)
+    }
 
     $outDir = if ($outMode -eq 'subfolder') { Join-Path $Root '转码成果' } else { $Root }
     $outSuffix = if ($outMode -eq 'subfolder') { '' } else { '_转码' }
@@ -2039,13 +2145,15 @@ function Invoke-TranscodeWorkflow {
     Write-Host "  $(col_a_text_muted '输出：')$(col_a_text $outLabel)"
     Write-Host
 
-    Show-MenuTitle '确认执行'
-    $confirmOpts = @(
-        @{ Label = '[y]开始转码'; Value = 'yes' }
-        @{ Label = '[n]取消'; Value = 'no' }
-    )
-    $confirm = Select-Horizontal -Options $confirmOpts -Prompt '' -InitialIndex 0
-    if ($null -eq $confirm -or $confirm -eq 'no') { return }
+    if (-not $quickLast) {
+        Show-MenuTitle '确认执行'
+        $confirmOpts = @(
+            @{ Label = '[y]开始转码'; Value = 'yes' }
+            @{ Label = '[n]取消'; Value = 'no' }
+        )
+        $confirm = Select-Horizontal -Options $confirmOpts -Prompt '' -InitialIndex 0
+        if ($null -eq $confirm -or $confirm -eq 'no') { return }
+    }
 
     Write-Host
     Write-Host "  $(col_a_title '开始转码（≤1080p 双文件并行，2K/4K 逐个）')"
