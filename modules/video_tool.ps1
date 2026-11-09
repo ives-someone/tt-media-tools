@@ -1,6 +1,10 @@
 ﻿<#
 video_tool.ps1
 v1.1（2026-11-05）：视频合并 / 转码工具，主菜单第 9 项。
+v1.2（2026-11-08）：新增 p 暂停 / 继续（挂起 ffmpeg 进程），
+       恢复后从冻结处继续写，输出文件不会损坏。
+v1.3（2026-11-09）：小文件并发转码——短边 ≤1080 的文件两两并行，
+       2K/4K 逐个串行；并发时按 p 同时暂停 / 恢复全部任务。
     合并：多段首尾拼接，无损 copy 优先，参数不一致时改有损重编码。
     转码：逐个文件按预设重编码，与合并共用 QSV / CRF 参数体系。
 
@@ -1769,13 +1773,12 @@ function Invoke-MergeWorkflow {
 # 与合并共用编码器解析 / 质量参数 / 配置段，只是不做拼接与缩放
 # ============================================================
 # 单文件转码：只换编码/质量，不动分辨率与帧率
-function Invoke-FileTranscode {
+# 构建单个文件的转码参数；串行与并发两条路径共用，避免参数逻辑分叉
+function Get-TranscodeArguments {
     param($Info, [string]$OutPath, $Settings)
 
     $encArgs = Get-EncoderArgs -Settings $Settings
-    if (-not $encArgs) {
-        return [PSCustomObject]@{ ExitCode = -2; Elapsed = [TimeSpan]::Zero; Message = '没有可用的编码器' }
-    }
+    if (-not $encArgs) { return $null }
 
     $argv = @('-hide_banner','-loglevel','error','-stats','-nostdin','-y','-i',$Info.FullPath,
               '-map','0:v:0','-map','0:a?')
@@ -1789,6 +1792,16 @@ function Invoke-FileTranscode {
     }
     $argv += @('-movflags','+faststart')
     $argv += $OutPath
+    return $argv
+}
+
+function Invoke-FileTranscode {
+    param($Info, [string]$OutPath, $Settings)
+
+    $argv = Get-TranscodeArguments -Info $Info -OutPath $OutPath -Settings $Settings
+    if (-not $argv) {
+        return [PSCustomObject]@{ ExitCode = -2; Elapsed = [TimeSpan]::Zero; Message = '没有可用的编码器' }
+    }
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $code = 0
@@ -1800,6 +1813,150 @@ function Invoke-FileTranscode {
     $sw.Stop()
 
     return [PSCustomObject]@{ ExitCode = $code; Elapsed = $sw.Elapsed; Message = '' }
+}
+
+# ============================================================
+# 并发转码组：≤1080p 的文件两两并行，2K/4K 单文件串行
+# ------------------------------------------------------------
+# 并发时两个 ffmpeg 的 -stats 会互相刷屏，因此这里把 stderr 重定向到
+# 临时日志，界面只显示「转码中 / 完成 / 失败」状态行。
+# 按 p 会同时挂起 / 恢复本组内所有进程。
+# ============================================================
+function Invoke-TranscodeGroup {
+    param(
+        [object[]]$Infos,
+        [string]$OutDir,
+        [string]$OutSuffix,
+        $Settings,
+        [int]$StartIndex,
+        [int]$TotalCount
+    )
+
+    $outputs = @()
+    $failures = @()
+    $jobs = @()
+    $seq = 0
+
+    foreach ($info in $Infos) {
+        $idx = $StartIndex + $seq
+        $seq++
+        $outPath = New-OutputPath -Root $OutDir -FirstName $info.Name -Ext 'mp4' -Suffix $OutSuffix
+        $argv = Get-TranscodeArguments -Info $info -OutPath $outPath -Settings $Settings
+        if (-not $argv) {
+            $failures += [PSCustomObject]@{ Name = $info.Name; Reason = '没有可用的编码器' }
+            continue
+        }
+
+        # 并发时去掉 -stats，避免两个进度条互相刷屏；错误仍由 -loglevel error 输出
+        $argv = @($argv | Where-Object { $_ -ne '-stats' })
+        $argv = @('-nostats') + $argv
+
+        $argString = ConvertTo-ProcessArgumentString -Arguments $argv
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $script:Env.Ffmpeg
+        $psi.Arguments = $argString
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $false
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $psi
+        try {
+            [void]$proc.Start()
+        } catch {
+            $failures += [PSCustomObject]@{ Name = $info.Name; Reason = "无法启动 ffmpeg：$($_.Exception.Message)" }
+            continue
+        }
+
+        $jobs += [PSCustomObject]@{
+            Process = $proc
+            Info    = $info
+            OutPath = $outPath
+        }
+        $parallelHint = if ($jobs.Count -gt 1) { '（并行）' } else { '' }
+        Write-Host "  $(col_a_text_muted ("  [$idx/$TotalCount] " + (Format-Truncated -Text $info.Name -MaxWidth 40) + $parallelHint))"
+    }
+
+    if ($jobs.Count -eq 0) {
+        return [PSCustomObject]@{ Outputs = @($outputs); Failures = @($failures) }
+    }
+
+    # 懒加载挂起 API（与本文件其它进程调用一致）
+    if (-not ('DshVideoTool.Native' -as [type])) {
+        $nativeCode = '[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(System.IntPtr processHandle); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(System.IntPtr processHandle);'
+        try { Add-Type -Namespace DshVideoTool -Name Native -MemberDefinition $nativeCode -ErrorAction Stop } catch { }
+    }
+
+    $canPause = $false
+    if ('DshVideoTool.Native' -as [type]) {
+        try { if (-not [Console]::IsInputRedirected) { $canPause = $true } } catch { }
+    }
+    if ($canPause -and $jobs.Count -gt 1) {
+        Write-Host "  $(col_a_text_muted '[p] 暂停 / 继续（同时作用于并行任务）')"
+    }
+
+    $suspended = $false
+    while ($true) {
+        $running = @($jobs | Where-Object { -not $_.Process.HasExited })
+        if ($running.Count -eq 0) { break }
+
+        if ($canPause) {
+            try {
+                if ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    if ($key.Key -eq [ConsoleKey]::P) {
+                        foreach ($j in $running) {
+                            try {
+                                if ($suspended) { [void][DshVideoTool.Native]::NtResumeProcess($j.Process.Handle) }
+                                else { [void][DshVideoTool.Native]::NtSuspendProcess($j.Process.Handle) }
+                            } catch { }
+                        }
+                        $suspended = -not $suspended
+                        if ($suspended) {
+                            Write-Host "  $(col_a_warning '⏸ 已暂停全部并行任务，按 p 继续')"
+                        } else {
+                            Write-Host "  $(col_a_success '▶ 继续')"
+                        }
+                    }
+                }
+            } catch {
+                $canPause = $false
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    foreach ($job in $jobs) {
+        $code = $job.Process.ExitCode
+        $ok = $false
+        $reason = ''
+        if ($code -eq 0) {
+            $check = Test-MergeOutput -Path $job.OutPath -ExpectedDuration $job.Info.Duration
+            $ok = $check.Ok
+            $reason = $check.Message
+        } else {
+            $reason = "ffmpeg 退出码 $code（错误信息见上方控制台输出）"
+        }
+
+        if ($ok) {
+            $size = (Get-Item -LiteralPath $job.OutPath).Length
+            $outName = [System.IO.Path]::GetFileName($job.OutPath)
+            Write-Host "     $(col_a_success '✅ 完成')$(col_a_text_muted ' → ')$(col_a_text $outName)$(col_a_text_muted ' ｜ ')$(col_a_text (Format-FileSize $size))"
+            $outputs += [PSCustomObject]@{
+                Path = $job.OutPath
+                Name = $outName
+                Size = $size
+            }
+        } else {
+            Write-Host "     $(col_a_error "❌ 失败：$reason")"
+            if (Test-Path -LiteralPath $job.OutPath) {
+                Remove-Item -LiteralPath $job.OutPath -Force -ErrorAction SilentlyContinue
+            }
+            $failures += [PSCustomObject]@{ Name = $job.Info.Name; Reason = $reason }
+        }
+
+        $job.Process.Dispose()
+    }
+
+    return [PSCustomObject]@{ Outputs = @($outputs); Failures = @($failures) }
 }
 function Invoke-TranscodeWorkflow {
     param([string]$Root, $Config)
@@ -1891,49 +2048,49 @@ function Invoke-TranscodeWorkflow {
     if ($null -eq $confirm -or $confirm -eq 'no') { return }
 
     Write-Host
-    Write-Host "  $(col_a_title '开始转码（逐文件重新编码，耗时较长）')"
+    Write-Host "  $(col_a_title '开始转码（≤1080p 双文件并行，2K/4K 逐个）')"
     Write-Host
 
     $outputs = @()
     $failures = @()
     $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-    for ($i = 0; $i -lt $infos.Count; $i++) {
-        $info = $infos[$i]
-        $idx = $i + 1
-        $outPath = New-OutputPath -Root $outDir -FirstName $info.Name -Ext 'mp4' -Suffix $outSuffix
+    # 调度：短边 ≤1080 的文件两两并行；短边 >1080（2K/4K）单独串行。
+    # 遇到大文件时先把当前小文件组跑完，保持输入顺序。
+    $completed = 0
+    $smallBatch = @()
 
-        Write-Host "  $(col_a_text_muted ("  [$idx/$($infos.Count)] " + (Format-Truncated -Text $info.Name -MaxWidth 40)))"
-
-        $result = Invoke-FileTranscode -Info $info -OutPath $outPath -Settings $settings
-        $code = $result.ExitCode
-        $sw = [PSCustomObject]@{ Elapsed = $result.Elapsed }
-
-        # 只校验时长：带旋转元数据的竖屏视频解码后宽高可能互换，不能死比分辨率
-        $check = $null
-        $ok = $false
-        if ($code -eq 0) {
-            $check = Test-MergeOutput -Path $outPath -ExpectedDuration $info.Duration
-            $ok = $check.Ok
-        }
-
-        if ($ok) {
-            $size = (Get-Item -LiteralPath $outPath).Length
-            $outName = [System.IO.Path]::GetFileName($outPath)
-            Write-Host "     $(col_a_success '✅ 完成')$(col_a_text_muted ' → ')$(col_a_text $outName)$(col_a_text_muted ' ｜ ')$(col_a_text (Format-FileSize $size))$(col_a_text_muted ' ｜ ')$(col_a_text ([string][math]::Round($sw.Elapsed.TotalSeconds, 1) + ' 秒'))"
-            $outputs += [PSCustomObject]@{
-                Path = $outPath
-                Name = [System.IO.Path]::GetFileName($outPath)
-                Size = $size
+    foreach ($info in $infos) {
+        $shortSide = [math]::Min($info.Width, $info.Height)
+        if ($shortSide -le 1080) {
+            $smallBatch += $info
+            if ($smallBatch.Count -ge 2) {
+                $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
+                $outputs += @($batchResult.Outputs)
+                $failures += @($batchResult.Failures)
+                $completed += $smallBatch.Count
+                $smallBatch = @()
             }
         } else {
-            $reason = if ($code -ne 0) { "ffmpeg 退出码 $code" } else { $check.Message }
-            Write-Host "     $(col_a_error "❌ 失败：$reason")"
-            if (Test-Path -LiteralPath $outPath) {
-                Remove-Item -LiteralPath $outPath -Force -ErrorAction SilentlyContinue
+            if ($smallBatch.Count -gt 0) {
+                $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
+                $outputs += @($batchResult.Outputs)
+                $failures += @($batchResult.Failures)
+                $completed += $smallBatch.Count
+                $smallBatch = @()
             }
-            $failures += [PSCustomObject]@{ Name = $info.Name; Reason = $reason }
+            $batchResult = Invoke-TranscodeGroup -Infos @($info) -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
+            $outputs += @($batchResult.Outputs)
+            $failures += @($batchResult.Failures)
+            $completed += 1
         }
+    }
+
+    if ($smallBatch.Count -gt 0) {
+        $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
+        $outputs += @($batchResult.Outputs)
+        $failures += @($batchResult.Failures)
+        $completed += $smallBatch.Count
     }
     $totalSw.Stop()
 
