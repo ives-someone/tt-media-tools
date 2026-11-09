@@ -48,6 +48,8 @@ v4.0：菜单新增第 9 项「视频合并 / 转码工具」（modules\video_to
 v4.1：主菜单重排为 1~5 + 视频工具(6) + [0] 其他小工具集合。
     原 6/7/8 三项收进二级菜单；子菜单跑完一个工具即回主菜单。
     依赖 ui.ps1 v7.0 的数字标签（支持 [0] 直达）。
+v4.2：启动时探针检测 modules 下脚本是否带“网络下载”标记（MOTW），
+    有则批量解锁；已解锁时只做一次流检测，几乎零开销。
 ============================================================
 #>
 
@@ -55,6 +57,15 @@ v4.1：主菜单重排为 1~5 + 视频工具(6) + [0] 其他小工具集合。
 # 区块零：初始化
 # 加载公共 UI 框架、获取脚本目录、定义子模块调用路径
 # ============================================================
+
+# 从 GitHub 下载 zip 解压后，modules 下的脚本会带 Zone.Identifier；
+# 在加载 ui.ps1 之前探针一次：有标记就批量解锁，第二次运行直接跳过。
+$uiProbe = Join-Path $PSScriptRoot 'modules\ui\ui.ps1'
+if (Get-Item -LiteralPath $uiProbe -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+    Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'modules') -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.ps1', '.psd1', '.psm1' } |
+        Unblock-File -ErrorAction SilentlyContinue
+}
 
 # dot-source 公共 UI 框架（配色/菜单/预览格式化/清屏/分割线，全部由 ui.ps1 统一实现）
 # v3.3：UI 模块实际文件已迁移至 modules\ui\ui.ps1，此处同步修正加载路径

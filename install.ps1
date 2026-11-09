@@ -14,6 +14,8 @@ TT_Media_Tools 环境管理（由 install.bat 调用，也可直接运行）
        去掉 Read-Host 回车交互；ui.ps1 缺失时降级为单键读取。
   v2.2 增加 ffmpeg 检测与提示：菜单 6 的视频合并 / 转码需要
        ffmpeg.exe + ffprobe.exe，两者缺一不可。
+  v2.3 启动时批量解除脚本的“网络下载”标记（MOTW），
+       解决从 GitHub 下载 zip 后 RemoteSigned 拒绝运行的问题。
 ============================================================
 #>
 
@@ -23,6 +25,24 @@ $ToolDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ToolsDir = Join-Path $ToolDir 'tools'
 $ModulesDir = Join-Path $ToolDir 'modules'
 $UiPath   = Join-Path $ToolDir 'modules\ui\ui.ps1'
+
+# ------------------------------------------------------------
+# 解除“网络下载”标记（MOTW）
+# 从 GitHub 下载 zip 解压后，脚本会带 Zone.Identifier，
+# RemoteSigned 下会被当成未签名脚本拒绝；这里一次性批量解锁。
+# 只处理确实带标记的文件，重复运行没有额外写操作。
+# ------------------------------------------------------------
+$unblockedCount = 0
+Get-ChildItem -LiteralPath $ToolDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.ps1', '.bat', '.cmd', '.psd1', '.psm1' } |
+    ForEach-Object {
+        if (Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+            try {
+                Unblock-File -LiteralPath $_.FullName -ErrorAction Stop
+                $unblockedCount++
+            } catch { }
+        }
+    }
 
 # ------------------------------------------------------------
 # 加载公共 UI 框架（缺失时降级，不影响核心功能）

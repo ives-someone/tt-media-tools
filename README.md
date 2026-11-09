@@ -74,6 +74,9 @@
 2. 双击 `install.bat`
 3. 脚本会自动把 `tools\` 加入用户 PATH
 
+> **从 GitHub 下载 zip 后请先运行 `install.bat`**：解压出来的脚本带有“网络下载”标记，`install.bat` 会先解除 `install.ps1` 的锁定，`install.ps1` 再批量解除整个目录的脚本锁定。
+> 如果直接输入 `tt` 提示“未进行数字签名”，说明还没解锁：运行一次 `install.bat`，或运行 `tt.bat`（首次会自动解锁 `tt.ps1` 和 `modules\` 下的脚本）。
+
 > 也可以自己把它放进系统 PATH，`install.bat` 检测到就直接使用，不需要 tools 目录。
 > 如果下载的是 shared 版本（`ffprobe.exe` 只有几百 KB），必须连同 `avcodec-*.dll` 等一起放入 `tools\`，否则无法运行。
 
@@ -184,6 +187,7 @@
 
 1. 把整个目录解压到任意位置，推荐放在分区根目录（例如 `C:\ps`）。
 2. 双击 `install.bat`，选择「安装」把该目录加入系统 `PATH`。
+   如果是 GitHub 下载的 zip，`install.bat` 会同时解除脚本的网络下载锁定，避免 `RemoteSigned` 下报“未进行数字签名”。
    （也可以手动配置：此电脑 → 属性 → 高级系统设置 → 环境变量 → 系统变量 `Path` 中新增该目录）
 3. 进入**需要处理的视频文件夹**，在空白处按住 `Shift` + 鼠标右键，选择「在此处打开 PowerShell 窗口」。
 4. 确认当前路径就是目标文件夹，输入 `tt` 回车即可启动主菜单。

@@ -27,7 +27,8 @@
 | 7 | `video_tool` | **视频转码** —— 逐个文件按合并同一套预设重编码，保持原分辨率 / 帧率；音频为 AAC 时复制、其余转 AAC；输出可选「转码成果」子文件夹或源文件夹 |
 | 8 | `video_tool` | **配置分段** —— `merge` / `transcode` 各自记忆编码偏好与 `outputMode`；老配置缺 `transcode` 段时自动继承 `merge` |
 | 9 | `video_tool` | **处理范围** —— 扫描后可选「全部」或「指定序号」（`1-3,5`）；合并按输入顺序拼接并在执行前列出确认，转码共用同一选择 |
-| 10 | `video_tool` | **暂停 / 继续** —— 转码或有损合并时按 `p` 挂起 ffmpeg，再按 `p` 恢复；挂起只冻结进程，输出文件不会损坏 |'@
+| 10 | `video_tool` | **暂停 / 继续** —— 转码或有损合并时按 `p` 挂起 ffmpeg，再按 `p` 恢复；挂起只冻结进程，输出文件不会损坏 |
+| 11 | 环境 | **脚本解锁** —— `install.bat` 解锁 `install.ps1`；`install.ps1` 全量解锁；`tt.bat` 探针解锁 `tt.ps1`；`tt.ps1` 探针解锁 `modules` |
 
 Edit-File -Path $changelog -Bom $false -Old '| `modules\video_tool.ps1` | v1.1 | 1968 | ✅ |' -New '| `modules\video_tool.ps1` | v1.2 | 2062 | ✅ |'
 
@@ -84,9 +85,10 @@ v1.2（2026-11-08）：新增 p 暂停 / 继续（挂起 ffmpeg 进程），
 
 | 模块 | 版本 | 行数 | 状态 |
 |---|---|---|---|
-| `tt.ps1` | v4.1 | 237 | ✅ |
+| `tt.ps1` | v4.2 | 248 | ✅ |
+| `install.ps1` | v2.3 | 414 | ✅ |
 | `modules\ui\ui.ps1` | v7.0 | 702 | ✅ |
-| `modules\video_tool.ps1` | v1.1 | 1968 | ✅ |
+| `modules\video_tool.ps1` | v1.2 | 2062 | ✅ |
 
 ---
 
