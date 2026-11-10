@@ -1329,7 +1329,7 @@ function Read-ReencodeSettings {
             @{ Label = '[1]一键按上次'; Value = 'last' }
             @{ Label = '[2]H.265（画质优先）'; Value = 'hevc' }
             @{ Label = '[3]H.264（兼容优先）'; Value = 'h264' }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
         $codecDefault = 0
     } else {
@@ -1337,7 +1337,7 @@ function Read-ReencodeSettings {
         $codecOpts = @(
             @{ Label = '[5]H.265（画质优先）'; Value = 'hevc' }
             @{ Label = '[4]H.264（兼容优先）'; Value = 'h264' }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
     }
     $codecPick = Select-Horizontal -Options $codecOpts -Prompt '' -InitialIndex $codecDefault
@@ -1369,7 +1369,7 @@ function Read-ReencodeSettings {
             @{ Label = '[i]ICQ 质量'; Value = 'icq' }
             @{ Label = '[b]CBR 码率'; Value = 'cbr' }
             @{ Label = '[c]CRF 质量'; Value = 'crf' }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
         $ratePick = Select-Horizontal -Options $rateOpts -Prompt '' -InitialIndex $rateDefault
         if ($null -eq $ratePick -or $ratePick -eq 'cancel') { return $null }
@@ -1403,7 +1403,7 @@ function Read-ReencodeSettings {
         $frameOpts = @(
             @{ Label = '[0]保持原帧率（默认）'; Value = 0 }
             @{ Label = '[1]自定义帧率'; Value = 1 }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
         $framePick = Select-Horizontal -Options $frameOpts -Prompt '' -InitialIndex $frameDefault
         if ($null -eq $framePick -or $framePick -eq 'cancel') { return $null }
@@ -1625,7 +1625,7 @@ function Select-ProcessingScope {
     $scopeOpts = @(
         @{ Label = '[a]全部视频（回车）'; Value = 'all' }
         @{ Label = '[s]指定序号'; Value = 'select' }
-        @{ Label = '[q]取消'; Value = 'cancel' }
+        @{ Label = '[q/Esc]取消'; Value = 'cancel' }
     )
     $scopePick = Select-Horizontal -Options $scopeOpts -Prompt '' -InitialIndex 0
     if ($null -eq $scopePick -or $scopePick -eq 'cancel') { return $null }
@@ -1657,7 +1657,7 @@ function Select-ProcessingScope {
         $okOpts = @(
             @{ Label = '[y]确认这个范围'; Value = 'yes' }
             @{ Label = '[r]重新输入'; Value = 'retry' }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
         $ok = Select-Horizontal -Options $okOpts -Prompt '' -InitialIndex 0
         if ($null -eq $ok -or $ok -eq 'cancel') { return $null }
@@ -1737,7 +1737,7 @@ function Invoke-MergeWorkflow {
     $modeOpts = @(
         @{ Label = $copyLabel; Value = 'copy' }
         @{ Label = '[n]有损重新编码合并'; Value = 'reencode' }
-        @{ Label = '[q]取消'; Value = 'cancel' }
+        @{ Label = '[q/Esc]取消'; Value = 'cancel' }
     )
     $modePick = Select-Horizontal -Options $modeOpts -Prompt '' -InitialIndex $defaultMode
     if ($null -eq $modePick -or $modePick -eq 'cancel') { return }
@@ -2199,7 +2199,7 @@ function Invoke-TranscodeWorkflow {
         $outModeOpts = @(
             @{ Label = '[1]转码成果子文件夹'; Value = 'subfolder' }
             @{ Label = '[2]源文件夹'; Value = 'source' }
-            @{ Label = '[q]取消'; Value = 'cancel' }
+            @{ Label = '[q/Esc]取消'; Value = 'cancel' }
         )
         $outMode = Select-Horizontal -Options $outModeOpts -Prompt '' -InitialIndex $modeDefault
         if ($null -eq $outMode -or $outMode -eq 'cancel') { return }
@@ -2400,7 +2400,7 @@ while ($true) {
     $modeOpts = @(
         @{ Label = '[1]视频合并工具'; Value = 'merge' }
         @{ Label = '[2]视频转码工具'; Value = 'transcode' }
-        @{ Label = '[q]退出'; Value = 'exit' }
+        @{ Label = '[q/Esc]退出'; Value = 'exit' }
     )
     $modePick = Select-Horizontal -Options $modeOpts -Prompt '' -InitialIndex 0
     if ($null -eq $modePick -or $modePick -eq 'exit') { exit 0 }
