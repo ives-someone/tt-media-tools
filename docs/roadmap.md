@@ -1,4 +1,4 @@
-# TT_Media_Tools 后续方向（Roadmap）
+﻿# TT_Media_Tools 后续方向（Roadmap）
 
 > 更新时间：2026-11-10
 > 当前版本：v6.3（tag `7239901`）
@@ -75,7 +75,7 @@
 ## 四、约定
 
 - UI：所有显示行行首两格缩进；标题 `col_a_title`、分隔线 60 个 `=`；菜单不设“退出”项；`q/Esc` 语义见 `UI规范.md`
-- 编码：`.ps1` 使用 UTF-8 **带 BOM** + CRLF；`.md` / `.txt` 使用 UTF-8 无 BOM + CRLF
+- 编码：`.ps1` / `.md` / `.txt` 含中文时统一 UTF-8 **带 BOM** + CRLF（避免 Windows 记事本 / 命令行按 ANSI 误判乱码）；`.bat` 保持 UTF-8 无 BOM（cmd 不识别 BOM，加了会报错）
 - 交互：`Arrow-Menu` 竖向、`Select-Horizontal` 横向；数字 / 字母直达；底部提示统一 `[q/Esc]`
 - 安全：删除类默认跳过、删除前 `.bak`、能撤销就提供撤销
 - 测试：改动后至少做语法检查 + 代表性小样本测试；涉及 ffmpeg 的功能用短视频样本验证输出时长/分辨率

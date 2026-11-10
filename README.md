@@ -1,4 +1,4 @@
-# TT_Media_Tools
+﻿# TT_Media_Tools
 
 > 一套基于 PowerShell 编写的 Windows 视频素材批量整理脚本工具集。
 

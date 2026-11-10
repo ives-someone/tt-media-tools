@@ -1,4 +1,4 @@
-# TT_Media_Tools 界面规范
+﻿# TT_Media_Tools 界面规范
 
 适用范围：`tt.ps1` 主菜单及 `modules\` 下所有子模块的**交互界面**。
 依赖：`modules\ui\ui.ps1`（配色、菜单、清屏等公共实现）。
