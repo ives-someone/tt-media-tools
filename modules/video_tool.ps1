@@ -379,25 +379,9 @@ function Initialize-Environment {
     return $true
 }
 
-# ============================================================
-# 区块三：文本与表格工具
-# 视觉宽度：沿用其余模块的口径（中文/全角按 2 列）
-# ============================================================
-function Get-DisplayWidth {
-    param([string]$s)
-    $w = 0
-    foreach ($c in $s.ToCharArray()) {
-        $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
-    }
-    return $w
-}
+# Get-DisplayWidth 已移至 ui.ps1
 
-function PadTo {
-    param([string]$Text, [int]$Width)
-    $pad = $Width - (Get-DisplayWidth $Text)
-    if ($pad -lt 0) { $pad = 0 }
-    return $Text + (" " * $pad)
-}
+# PadTo 已移至 ui.ps1
 
 function Format-Truncated {
     param([string]$Text, [int]$MaxWidth)
@@ -1243,14 +1227,7 @@ function Invoke-ReencodeMerge {
 # 区块十：交互小工具
 # ============================================================
 
-# 两格缩进的菜单标题（横向选单没有 -Title 参数，由调用方打印）
-function Show-MenuTitle {
-    param([string]$Title)
-    Write-Host
-    Write-Host "  $(col_a_title $Title)"
-    Write-Host "  $(col_a_line (sep))"
-    Write-Host
-}
+# Show-MenuTitle 已移至 ui.ps1
 
 function Read-NumberInput {
     param(

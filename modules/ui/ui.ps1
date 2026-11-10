@@ -700,3 +700,79 @@ function Select-Horizontal {
         Write-Host -NoNewline ("`r  " + $optLine + "  $([char]27)[K")
     }
 }
+
+# ============================================================
+# 区块：文本宽度与对齐（各业务模块共用，v6.3 起从模块内抽取）
+# ============================================================
+
+<#
+.SYNOPSIS
+    计算字符串在控制台中的视觉宽度（中文/全角按 2 列，其余按 1 列）。
+
+.PARAMETER Text
+    待计算文本。
+
+.OUTPUTS
+    [int] 视觉宽度。
+
+.EXAMPLE
+    PS> Get-DisplayWidth "abc"
+    3
+
+.EXAMPLE
+    PS> Get-DisplayWidth "中文"
+    4
+#>
+function Get-DisplayWidth {
+    param([string]$Text)
+    $w = 0
+    foreach ($c in $Text.ToCharArray()) {
+        $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
+    }
+    return $w
+}
+
+<#
+.SYNOPSIS
+    按视觉宽度右补空格，使文本在终端中占满指定列宽。
+
+.PARAMETER Text
+    原始文本。
+
+.PARAMETER Width
+    目标视觉宽度。
+
+.OUTPUTS
+    [string] 补齐后的文本。
+
+.EXAMPLE
+    PS> PadTo "abc" 5
+    "abc  "
+#>
+function PadTo {
+    param([string]$Text, [int]$Width)
+    $pad = $Width - (Get-DisplayWidth $Text)
+    if ($pad -lt 0) { $pad = 0 }
+    return $Text + (" " * $pad)
+}
+
+<#
+.SYNOPSIS
+    打印标准菜单标题块（标题 + 60 个 = 的分隔线）。
+
+.PARAMETER Title
+    菜单标题文本。
+
+.EXAMPLE
+    PS> Show-MenuTitle "功能选择"
+    将会显示：
+      功能选择
+      ============================================================
+#>
+function Show-MenuTitle {
+    param([string]$Title)
+    Write-Host
+    Write-Host "  $(col_a_title $Title)"
+    Write-Host "  $(col_a_line (sep))"
+    Write-Host
+}

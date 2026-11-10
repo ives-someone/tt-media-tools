@@ -44,14 +44,7 @@ $script:ColWidth = 46
 $script:MaxWidth = 44
 $diffSep = sep_weak -Len ($script:ColWidth * 2 + 18)
 
-function Get-DisplayWidth {
-    param([string]$s)
-    $w = 0
-    foreach ($c in $s.ToCharArray()) {
-        $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
-    }
-    return $w
-}
+# Get-DisplayWidth 已移至 ui.ps1
 
 function Format-TruncatedName {
     param([string]$name, [int]$maxWidth = $script:MaxWidth)

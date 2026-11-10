@@ -40,14 +40,7 @@ v4.0：全面重写，对齐整套工具的 UI 规范与 nfo 写入安全规范�
 
 # 附属文件白名单与 Test-ArtBaseName 已移至 common.ps1
 
-# 菜单标题（ui.ps1 没有提供，video_tool 里也是各自定义）
-function Show-MenuTitle {
-    param([string]$Title)
-    Write-Host
-    Write-Host "  $(col_a_title $Title)"
-    Write-Host "  $(col_a_line (sep))"
-    Write-Host
-}
+# Show-MenuTitle 已移至 ui.ps1
 
 # ========== 孤立文件清理（复用 time_clear 的口径：nfo + 图片） ==========
 function Invoke-OrphanCleanup {
@@ -176,21 +169,9 @@ $script:W3 = 26   # 当前 title
 $script:W4 = 26   # 目标值
 $tableSep = sep_weak -Len ($script:W1 + $script:W2 + $script:W3 + $script:W4 + 16)
 
-function Get-DisplayWidth {
-    param([string]$s)
-    $w = 0
-    foreach ($c in $s.ToCharArray()) {
-        $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
-    }
-    return $w
-}
+# Get-DisplayWidth 已移至 ui.ps1
 
-function PadTo {
-    param([string]$Text, [int]$Width)
-    $pad = $Width - (Get-DisplayWidth $Text)
-    if ($pad -lt 0) { $pad = 0 }
-    return $Text + (" " * $pad)
-}
+# PadTo 已移至 ui.ps1
 
 function Format-TruncatedName {
     param([string]$name, [int]$maxWidth = 30)

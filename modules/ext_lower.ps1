@@ -30,21 +30,9 @@ v2.0：扩展名大写转小写，对齐整套工具的 UI 规范，并加入递
 $script:W1 = 46   # 原文件名（递归时含相对路径）
 $script:W2 = 46   # 新文件名
 
-function Get-DisplayWidth {
-    param([string]$s)
-    $w = 0
-    foreach ($c in $s.ToCharArray()) {
-        $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
-    }
-    return $w
-}
+# Get-DisplayWidth 已移至 ui.ps1
 
-function PadTo {
-    param([string]$Text, [int]$Width)
-    $pad = $Width - (Get-DisplayWidth $Text)
-    if ($pad -lt 0) { $pad = 0 }
-    return $Text + (" " * $pad)
-}
+# PadTo 已移至 ui.ps1
 
 function Format-TruncatedName {
     param([string]$name, [int]$maxWidth = 44)

@@ -176,7 +176,6 @@ v5.35：ffprobe 并发调度重构——与外部 ffprobe 进程解耦。
     7、保留 5 秒超时 → Shell.Application 兜底 的原设计不变。
 #>
 
-
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -401,7 +400,6 @@ $enablenfoTagEdit = $false
 
 Write-Host; Write-Host
 
-
 Write-Host "  $(col_a_title ('Emby/Jellyfin配图和nfo文件跟随处理开关'))"
 Write-Host "  $(col_a_line (sep))"
 Write-Host ""
@@ -479,14 +477,7 @@ $pureTimeNameRegex = '^(\d{1,2}h)?\d{1,2}m\d{1,2}s$'
         return $res + "…" + $ext
     }
 
-    function Get-DisplayWidth {
-        param([string]$txt)
-        $w = 0
-        foreach ($c in $txt.ToCharArray()) {
-            $w += if ($c -gt 0x2E7F -or ($c -ge 0xFF00 -and $c -le 0xFFEF)) { 2 } else { 1 }
-        }
-        return $w
-    }
+# Get-DisplayWidth 已移至 ui.ps1
 
     # v5.16：ColWidth/MaxWidth 默认走脚本级变量，调用处零硬编码
     function Format-TableRow {
@@ -950,7 +941,6 @@ try {
 
     # ========== 预览表格 ==========
     Write-Host; Write-Host
-
 
     Write-Host "  $(col_a_title ('重命名预览 (time_add - ' + $modeName + ')'))"
     Write-Host "  $(col_a_line (sep_weak))"
