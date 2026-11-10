@@ -1514,9 +1514,9 @@ function Show-VideoTable {
     $sepLine = sep_weak -Len (5 + $colName + $colDur + $colRes + $colFps + $colCodec + $colSize)
     Write-Host ('  ' + $sepLine)
 
-    $maxShow = 25
-    $showCount = [math]::Min($maxShow, $Infos.Count)
-    for ($i = 0; $i -lt $showCount; $i++) {
+    # 不截断清单：原实现只显示前 25 个并提示“还有 N 个未显示”，
+    # 后面的文件看不到、无法判断序号；文件多时整屏滚动即可，至少能选到任意一个。
+    for ($i = 0; $i -lt $Infos.Count; $i++) {
         $info = $Infos[$i]
         $fpsText = if ($info.Fps -gt 0) { [math]::Round($info.Fps, 3) } else { '-' }
         $row = (PadTo ("{0,-3}" -f ($i + 1)) 5) +
@@ -1527,9 +1527,6 @@ function Show-VideoTable {
                (PadTo $info.VCodec $colCodec) +
                (Format-FileSize $info.SizeBytes)
         Write-Host ('  ' + $row)
-    }
-    if ($Infos.Count -gt $maxShow) {
-        Write-Host "  $(col_a_text_muted ("  … 还有 " + ($Infos.Count - $maxShow) + " 个未显示"))"
     }
     Write-Host ('  ' + $sepLine)
 
