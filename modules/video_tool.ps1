@@ -12,6 +12,8 @@ v1.5（2026-11-09）：并发转码恢复进度显示——用 -progress 文件�
        各任务的百分比与倍速，单行汇总刷新，两个任务都能看到进度。
 v1.6（2026-11-10）：转码新增帧率选项（保持原帧率 / 自定义 1~120 fps）；
        合并帧率不兼容提示改为明确说明“无损拼接可能音画不同步”。
+v1.7（2026-11-10）：转码改为任务池调度——小文件双槽滚动补位，
+       2K/4K 独占；输出清单按原输入序号排序。
     合并：多段首尾拼接，无损 copy 优先，参数不一致时改有损重编码。
     转码：逐个文件按预设重编码，与合并共用 QSV / CRF 参数体系。
 
@@ -1973,67 +1975,87 @@ function Get-FfmpegProgressPercent {
 # 临时日志，界面只显示「转码中 / 完成 / 失败」状态行。
 # 按 p 会同时挂起 / 恢复本组内所有进程。
 # ============================================================
-function Invoke-TranscodeGroup {
+# 启动单个转码任务（不等待），供任务池调度使用
+function New-TranscodeJob {
+    param(
+        $Info,
+        [int]$Index,
+        [bool]$Big,
+        [string]$OutDir,
+        [string]$OutSuffix,
+        $Settings
+    )
+
+    $outPath = New-OutputPath -Root $OutDir -FirstName $Info.Name -Ext 'mp4' -Suffix $OutSuffix
+    $argv = Get-TranscodeArguments -Info $Info -OutPath $outPath -Settings $Settings
+    if (-not $argv) {
+        return [PSCustomObject]@{ Ok = $false; Reason = '没有可用的编码器' }
+    }
+
+    # 不开 -stats（多任务会互相刷屏），改用 -progress 写独立文件
+    $progress = Join-Path ([System.IO.Path]::GetTempPath()) ("tt_progress_" + [guid]::NewGuid().ToString('N') + ".txt")
+    $argv = @($argv | Where-Object { $_ -ne '-stats' })
+    $argv = @('-nostats', '-progress', $progress) + $argv
+
+    $argString = ConvertTo-ProcessArgumentString -Arguments $argv
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $script:Env.Ffmpeg
+    $psi.Arguments = $argString
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $false
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    try {
+        [void]$proc.Start()
+    } catch {
+        return [PSCustomObject]@{ Ok = $false; Reason = "无法启动 ffmpeg：$($_.Exception.Message)" }
+    }
+
+    return [PSCustomObject]@{
+        Ok       = $true
+        Process  = $proc
+        Info     = $Info
+        OutPath  = $outPath
+        Progress = $progress
+        Index    = $Index
+        Big      = $Big
+    }
+}
+
+# ============================================================
+# 转码任务池：小文件滚动补位，大文件独占（有限插队）
+# ------------------------------------------------------------
+# - 短边 ≤1080：最多 2 个并行，完成一个立即补位
+# - 短边 >1080：必须两个槽都空才启动，独占
+# - 队首是大文件时，允许当前两个小任务跑完，但不再补位新小文件，
+#   直接让大文件独占；完成后恢复小文件双槽
+# - 结果按原输入序号排序返回
+# ============================================================
+function Invoke-TranscodePool {
     param(
         [object[]]$Infos,
         [string]$OutDir,
         [string]$OutSuffix,
         $Settings,
-        [int]$StartIndex,
         [int]$TotalCount
     )
 
+    $pending = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $Infos.Count; $i++) {
+        $info = $Infos[$i]
+        $shortSide = [math]::Min($info.Width, $info.Height)
+        $pending.Add([PSCustomObject]@{
+            Info  = $info
+            Index = $i + 1
+            Big   = ($shortSide -gt 1080)
+        })
+    }
+
     $outputs = @()
     $failures = @()
-    $jobs = @()
-    $seq = 0
+    $running = New-Object System.Collections.Generic.List[object]
 
-    foreach ($info in $Infos) {
-        $idx = $StartIndex + $seq
-        $seq++
-        $outPath = New-OutputPath -Root $OutDir -FirstName $info.Name -Ext 'mp4' -Suffix $OutSuffix
-        $argv = Get-TranscodeArguments -Info $info -OutPath $outPath -Settings $Settings
-        if (-not $argv) {
-            $failures += [PSCustomObject]@{ Name = $info.Name; Reason = '没有可用的编码器' }
-            continue
-        }
-
-        # 并发时不开 -stats（两个进度条会互相刷屏），改用 -progress 写独立文件，
-        # 主循环读取 out_time_us / speed 后刷新成一行汇总进度。
-        $progress = Join-Path ([System.IO.Path]::GetTempPath()) ("tt_progress_" + [guid]::NewGuid().ToString('N') + ".txt")
-        $argv = @($argv | Where-Object { $_ -ne '-stats' })
-        $argv = @('-nostats', '-progress', $progress) + $argv
-
-        $argString = ConvertTo-ProcessArgumentString -Arguments $argv
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $script:Env.Ffmpeg
-        $psi.Arguments = $argString
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $false
-        $proc = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $psi
-        try {
-            [void]$proc.Start()
-        } catch {
-            $failures += [PSCustomObject]@{ Name = $info.Name; Reason = "无法启动 ffmpeg：$($_.Exception.Message)" }
-            continue
-        }
-
-        $jobs += [PSCustomObject]@{
-            Process  = $proc
-            Info     = $info
-            OutPath  = $outPath
-            Progress = $progress
-        }
-        $parallelHint = if ($jobs.Count -gt 1) { '（并行）' } else { '' }
-        Write-Host "  $(col_a_text_muted ("  [$idx/$TotalCount] " + (Format-Truncated -Text $info.Name -MaxWidth 40) + $parallelHint))"
-    }
-
-    if ($jobs.Count -eq 0) {
-        return [PSCustomObject]@{ Outputs = @($outputs); Failures = @($failures) }
-    }
-
-    # 懒加载挂起 API（与本文件其它进程调用一致）
+    # 懒加载挂起 API
     if (-not ('DshVideoTool.Native' -as [type])) {
         $nativeCode = '[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(System.IntPtr processHandle); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(System.IntPtr processHandle);'
         try { Add-Type -Namespace DshVideoTool -Name Native -MemberDefinition $nativeCode -ErrorAction Stop } catch { }
@@ -2043,20 +2065,89 @@ function Invoke-TranscodeGroup {
     if ('DshVideoTool.Native' -as [type]) {
         try { if (-not [Console]::IsInputRedirected) { $canPause = $true } } catch { }
     }
-    if ($canPause -and $jobs.Count -gt 1) {
-        Write-Host "  $(col_a_text_muted '[p] 暂停 / 继续（同时作用于并行任务）')"
+    if ($canPause) {
+        Write-Host "  $(col_a_text_muted '[p] 暂停 / 继续（作用于当前所有任务）')"
     }
 
     $suspended = $false
     $lastRefresh = [datetime]::MinValue
     $progressShown = $false
-    while ($true) {
-        $running = @($jobs | Where-Object { -not $_.Process.HasExited })
-        if ($running.Count -eq 0) { break }
 
-        # 每 500ms 用一行汇总刷新两个并行任务的进度与倍速
+    while ($pending.Count -gt 0 -or $running.Count -gt 0) {
+
+        # ---- 1. 处理已完成任务 ----
+        $finished = @($running | Where-Object { $_.Process.HasExited })
+        foreach ($job in $finished) {
+            $running.Remove($job) | Out-Null
+            if ($progressShown) { Write-Host ''; $progressShown = $false }
+
+            $code = $job.Process.ExitCode
+            $ok = $false
+            $reason = ''
+            if ($code -eq 0) {
+                $check = Test-MergeOutput -Path $job.OutPath -ExpectedDuration $job.Info.Duration
+                $ok = $check.Ok
+                $reason = $check.Message
+            } else {
+                $reason = "ffmpeg 退出码 $code（错误信息见上方控制台输出）"
+            }
+
+            if ($ok) {
+                $size = (Get-Item -LiteralPath $job.OutPath).Length
+                $outName = [System.IO.Path]::GetFileName($job.OutPath)
+                Write-Host "     $(col_a_success '✅ 完成')$(col_a_text_muted ' → ')$(col_a_text $outName)$(col_a_text_muted ' ｜ ')$(col_a_text (Format-FileSize $size))"
+                $outputs += [PSCustomObject]@{
+                    Index = $job.Index
+                    Path  = $job.OutPath
+                    Name  = $outName
+                    Size  = $size
+                }
+            } else {
+                Write-Host "     $(col_a_error "❌ 失败：$reason")"
+                if (Test-Path -LiteralPath $job.OutPath) {
+                    Remove-Item -LiteralPath $job.OutPath -Force -ErrorAction SilentlyContinue
+                }
+                $failures += [PSCustomObject]@{ Index = $job.Index; Name = $job.Info.Name; Reason = $reason }
+            }
+
+            Remove-Item -LiteralPath $job.Progress -Force -ErrorAction SilentlyContinue
+            $job.Process.Dispose()
+        }
+
+        # ---- 2. 启动新任务（小文件滚动补位，大文件独占） ----
+        while ($running.Count -lt 2) {
+            if ($pending.Count -eq 0) { break }
+
+            # 大文件独占：只要还有大文件在跑，就不再启动任何新任务
+            if (@($running | Where-Object { $_.Big }).Count -gt 0) { break }
+
+            $head = $pending[0]
+            if ($head.Big -and $running.Count -gt 0) { break }   # 大文件必须等槽空
+
+            $pending.RemoveAt(0)
+            $job = New-TranscodeJob -Info $head.Info -Index $head.Index -Big $head.Big -OutDir $OutDir -OutSuffix $OutSuffix -Settings $Settings
+            if (-not $job.Ok) {
+                $failures += [PSCustomObject]@{ Index = $head.Index; Name = $head.Info.Name; Reason = $job.Reason }
+                Write-Host "     $(col_a_error "❌ 失败：$($job.Reason)")"
+                continue
+            }
+
+            $running.Add($job) | Out-Null
+            if ($progressShown) { Write-Host ''; $progressShown = $false }
+            $hint = if ($head.Big) { '（独占）' } else { '（并行）' }
+            Write-Host "  $(col_a_text_muted ("  [$($head.Index)/$TotalCount] " + (Format-Truncated -Text $head.Info.Name -MaxWidth 40) + $hint))"
+
+            if ($head.Big) { break }   # 大文件独占，不再填第二个槽
+        }
+
+        if ($running.Count -eq 0) {
+            if ($pending.Count -eq 0) { break }
+            continue
+        }
+
+        # ---- 3. 进度刷新 ----
         if (-not $suspended -and ((Get-Date) - $lastRefresh).TotalMilliseconds -ge 500) {
-            $parts = foreach ($j in $jobs) {
+            $parts = foreach ($j in $running) {
                 $name = Format-Truncated -Text $j.Info.Name -MaxWidth 18
                 $pr = Get-FfmpegProgressPercent -Path $j.Progress -Duration $j.Info.Duration
                 if ($null -eq $pr) { "$name …" }
@@ -2067,6 +2158,7 @@ function Invoke-TranscodeGroup {
             $lastRefresh = Get-Date
         }
 
+        # ---- 4. 暂停 / 继续 ----
         if ($canPause) {
             try {
                 if ([Console]::KeyAvailable) {
@@ -2081,7 +2173,7 @@ function Invoke-TranscodeGroup {
                         $suspended = -not $suspended
                         if ($suspended) {
                             Write-Host ''
-                            Write-Host "  $(col_a_warning '⏸ 已暂停全部并行任务，按 p 继续')"
+                            Write-Host "  $(col_a_warning '⏸ 已暂停当前任务，按 p 继续')"
                         } else {
                             Write-Host ''
                             Write-Host "  $(col_a_success '▶ 继续')"
@@ -2093,45 +2185,16 @@ function Invoke-TranscodeGroup {
                 $canPause = $false
             }
         }
+
         Start-Sleep -Milliseconds 200
     }
 
     if ($progressShown) { Write-Host '' }
 
-    foreach ($job in $jobs) {
-        $code = $job.Process.ExitCode
-        $ok = $false
-        $reason = ''
-        if ($code -eq 0) {
-            $check = Test-MergeOutput -Path $job.OutPath -ExpectedDuration $job.Info.Duration
-            $ok = $check.Ok
-            $reason = $check.Message
-        } else {
-            $reason = "ffmpeg 退出码 $code（错误信息见上方控制台输出）"
-        }
-
-        if ($ok) {
-            $size = (Get-Item -LiteralPath $job.OutPath).Length
-            $outName = [System.IO.Path]::GetFileName($job.OutPath)
-            Write-Host "     $(col_a_success '✅ 完成')$(col_a_text_muted ' → ')$(col_a_text $outName)$(col_a_text_muted ' ｜ ')$(col_a_text (Format-FileSize $size))"
-            $outputs += [PSCustomObject]@{
-                Path = $job.OutPath
-                Name = $outName
-                Size = $size
-            }
-        } else {
-            Write-Host "     $(col_a_error "❌ 失败：$reason")"
-            if (Test-Path -LiteralPath $job.OutPath) {
-                Remove-Item -LiteralPath $job.OutPath -Force -ErrorAction SilentlyContinue
-            }
-            $failures += [PSCustomObject]@{ Name = $job.Info.Name; Reason = $reason }
-        }
-
-        Remove-Item -LiteralPath $job.Progress -Force -ErrorAction SilentlyContinue
-        $job.Process.Dispose()
+    return [PSCustomObject]@{
+        Outputs  = @($outputs | Sort-Object Index)
+        Failures = @($failures | Sort-Object Index)
     }
-
-    return [PSCustomObject]@{ Outputs = @($outputs); Failures = @($failures) }
 }
 function Invoke-TranscodeWorkflow {
     param([string]$Root, $Config)
@@ -2243,50 +2306,17 @@ function Invoke-TranscodeWorkflow {
     }
 
     Write-Host
-    Write-Host "  $(col_a_title '开始转码（≤1080p 双文件并行，2K/4K 逐个）')"
+    Write-Host "  $(col_a_title '开始转码（≤1080p 双任务滚动补位，2K/4K 独占）')"
     Write-Host
 
     $outputs = @()
     $failures = @()
     $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-    # 调度：短边 ≤1080 的文件两两并行；短边 >1080（2K/4K）单独串行。
-    # 遇到大文件时先把当前小文件组跑完，保持输入顺序。
-    $completed = 0
-    $smallBatch = @()
+    $poolResult = Invoke-TranscodePool -Infos $infos -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -TotalCount $infos.Count
+    $outputs = @($poolResult.Outputs)
+    $failures = @($poolResult.Failures)
 
-    foreach ($info in $infos) {
-        $shortSide = [math]::Min($info.Width, $info.Height)
-        if ($shortSide -le 1080) {
-            $smallBatch += $info
-            if ($smallBatch.Count -ge 2) {
-                $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
-                $outputs += @($batchResult.Outputs)
-                $failures += @($batchResult.Failures)
-                $completed += $smallBatch.Count
-                $smallBatch = @()
-            }
-        } else {
-            if ($smallBatch.Count -gt 0) {
-                $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
-                $outputs += @($batchResult.Outputs)
-                $failures += @($batchResult.Failures)
-                $completed += $smallBatch.Count
-                $smallBatch = @()
-            }
-            $batchResult = Invoke-TranscodeGroup -Infos @($info) -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
-            $outputs += @($batchResult.Outputs)
-            $failures += @($batchResult.Failures)
-            $completed += 1
-        }
-    }
-
-    if ($smallBatch.Count -gt 0) {
-        $batchResult = Invoke-TranscodeGroup -Infos $smallBatch -OutDir $outDir -OutSuffix $outSuffix -Settings $settings -StartIndex ($completed + 1) -TotalCount $infos.Count
-        $outputs += @($batchResult.Outputs)
-        $failures += @($batchResult.Failures)
-        $completed += $smallBatch.Count
-    }
     $totalSw.Stop()
 
     Write-Host
