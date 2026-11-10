@@ -37,29 +37,13 @@ param(
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
 # ========== 配置 ==========
 $videoExtsPattern = @("*.mp4","*.mov","*.mkv","*.avi","*.flv","*.wmv","*.m4v","*.ts",
                       "*.mpg","*.mpeg","*.f4v","*.m2ts","*.mts","*.webm","*.rmvb")
 
-# 附属文件词干白名单（与 time_add / time_clear / nfo_title 口径一致）
-$artStemList  = @('poster','fanart','cover','folder','thumb','banner','clearart','clearlogo',
-                  'logo','landscape','backdrop','background','disc','discart','cdart','default')
-$metaStemList = @('movie','tvshow','season')
-$stemTail     = '([ _-]?\(?\d+\)?)?$'
-
-$artBareRegex     = '^(' + ($artStemList  -join '|') + ')' + $stemTail
-$metaBareRegex    = '^(' + ($metaStemList -join '|') + ')' + $stemTail
-$artPrefixedRegex = '.+-(' + (($artStemList + $metaStemList) -join '|') + ')' + $stemTail
-
-function Test-ArtBaseName {
-    param([string]$BaseName)
-    if ([string]::IsNullOrEmpty($BaseName)) { return $false }
-    if ($BaseName -match $artBareRegex)     { return $true }
-    if ($BaseName -match $metaBareRegex)    { return $true }
-    if ($BaseName -match $artPrefixedRegex) { return $true }
-    return $false
-}
+# 附属文件白名单与 Test-ArtBaseName 已移至 common.ps1
 
 # ========== nfo 编码探测 ==========
 function Get-NfoEncoding {

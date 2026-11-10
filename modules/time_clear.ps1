@@ -26,10 +26,10 @@ v1.0：合并 time_clr_begin / time_clr_end / time_clr_auto / time_clr_remove �
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
 # ========== 配置 ==========
-$videoExts = @('mp4','mov','mkv','avi','flv','wmv','m4v','ts','mpg','mpeg','f4v','m2ts','mts','webm','rmvb')
-$artExts   = @('jpg','jpeg','png','webp','nfo')
+# 视频/附属文件扩展名已移至 common.ps1
 
 # 时间标记：XXhXXmXXs 或 XXmXXs（两位数字，与旧脚本保持一致）
 $timeUnit = '(\d{2}h\d{2}m\d{2}s|\d{2}m\d{2}s)'
@@ -37,25 +37,7 @@ $rePureTimeName   = '^' + $timeUnit + '$'          # 纯时间名
 $reTimeWithNum    = '^' + $timeUnit + '\d+$'       # 脚本产物：时间+序号
 $reAnyTime        = [regex]$timeUnit
 
-# ========== 附属文件词干白名单（与 time_add.ps1 v5.34 口径一致）==========
-# 判定对象一律是 BaseName（不含扩展名）
-$artStemList  = @('poster','fanart','cover','folder','thumb','banner','clearart','clearlogo',
-                  'logo','landscape','backdrop','background','disc','discart','cdart','default')
-$metaStemList = @('movie','tvshow','season')
-$stemTail     = '([ _-]?\(?\d+\)?)?$'
-
-$artBareRegex     = '^(' + ($artStemList  -join '|') + ')' + $stemTail
-$metaBareRegex    = '^(' + ($metaStemList -join '|') + ')' + $stemTail
-$artPrefixedRegex = '.+-(' + (($artStemList + $metaStemList) -join '|') + ')' + $stemTail
-
-function Test-ArtBaseName {
-    param([string]$BaseName)
-    if ([string]::IsNullOrEmpty($BaseName)) { return $false }
-    if ($BaseName -match $artBareRegex)     { return $true }
-    if ($BaseName -match $metaBareRegex)    { return $true }
-    if ($BaseName -match $artPrefixedRegex) { return $true }
-    return $false
-}
+# 附属文件白名单与 Test-ArtBaseName 已移至 common.ps1
 
 # ========== 预览表格式化 ==========
 $script:ColWidth = 46

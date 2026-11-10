@@ -33,28 +33,12 @@ v4.0：全面重写，对齐整套工具的 UI 规范与 nfo 写入安全规范�
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
 # ========== 配置 ==========
-$videoExts = @('mp4','mov','mkv','avi','flv','wmv','m4v','ts','mpg','mpeg','f4v','m2ts','mts','webm','rmvb')
+# 视频/附属文件扩展名已移至 common.ps1
 
-# 附属文件词干白名单（与 time_add.ps1 / time_clear.ps1 口径一致）
-$artStemList  = @('poster','fanart','cover','folder','thumb','banner','clearart','clearlogo',
-                  'logo','landscape','backdrop','background','disc','discart','cdart','default')
-$metaStemList = @('movie','tvshow','season')
-$stemTail     = '([ _-]?\(?\d+\)?)?$'
-
-$artBareRegex     = '^(' + ($artStemList  -join '|') + ')' + $stemTail
-$metaBareRegex    = '^(' + ($metaStemList -join '|') + ')' + $stemTail
-$artPrefixedRegex = '.+-(' + (($artStemList + $metaStemList) -join '|') + ')' + $stemTail
-
-function Test-ArtBaseName {
-    param([string]$BaseName)
-    if ([string]::IsNullOrEmpty($BaseName)) { return $false }
-    if ($BaseName -match $artBareRegex)     { return $true }
-    if ($BaseName -match $metaBareRegex)    { return $true }
-    if ($BaseName -match $artPrefixedRegex) { return $true }
-    return $false
-}
+# 附属文件白名单与 Test-ArtBaseName 已移至 common.ps1
 
 # 菜单标题（ui.ps1 没有提供，video_tool 里也是各自定义）
 function Show-MenuTitle {

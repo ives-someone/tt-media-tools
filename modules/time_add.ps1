@@ -179,6 +179,7 @@ v5.35：ffprobe 并发调度重构——与外部 ffprobe 进程解耦。
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
+. (Join-Path $PSScriptRoot "common.ps1")
 
 # ========== 工具函数 ==========
 function Wait-AnyKey {
@@ -445,34 +446,12 @@ try {
 } catch {
     $maxConcurrent = 4
 }
-$videoExts = @('mp4','mov','mkv','avi','flv','wmv','m4v','ts','mpg','mpeg','f4v','m2ts','mts','webm','rmvb')
-$artExts = @('jpg','jpeg','png','webp','nfo')
+# 视频/附属文件扩展名已移至 common.ps1
 # v5.34：去掉尾部 \b，改用左侧 (?<!\d) —— 否则 "00m06s2" / "00m06s-2" 认不出已标记，会重复追加时长
 $timeRegex = '(?<!\d)(\d{1,2}h)?\d{1,2}m\d{1,2}s'
 $pureTimeNameRegex = '^(\d{1,2}h)?\d{1,2}m\d{1,2}s$'
 
-# ========== v5.32-fix P0-3：附属文件判定（孤立检测 / nfo差异扫描共用）==========
-# 判定对象一律是 BaseName（不含扩展名），扩展名由调用方各自筛好
-# 形态① 无连字符标准命名：poster / poster1 / poster (2)
-# 形态② 无连字符元数据：movie / tvshow / season01
-# 形态③ 带连字符的视频配图：AAA-poster / AAA-fanart1 / AAA (2020)-thumb
-$artStemList  = @('poster','fanart','cover','folder','thumb','banner','clearart','clearlogo',
-                  'logo','landscape','backdrop','background','disc','discart','cdart','default')
-$metaStemList = @('movie','tvshow','season')
-$stemTail     = '([ _-]?\(?\d+\)?)?$'          # 允许 2 / -2 / _2 / " (2)"
-
-$artBareRegex     = '^(' + ($artStemList  -join '|') + ')' + $stemTail
-$metaBareRegex    = '^(' + ($metaStemList -join '|') + ')' + $stemTail
-$artPrefixedRegex = '.+-(' + (($artStemList + $metaStemList) -join '|') + ')' + $stemTail
-
-function Test-ArtBaseName {
-    param([string]$BaseName)
-    if ([string]::IsNullOrEmpty($BaseName)) { return $false }
-    if ($BaseName -match $artBareRegex)     { return $true }   # poster.nfo / poster.jpg
-    if ($BaseName -match $metaBareRegex)    { return $true }   # movie.nfo / tvshow.nfo / season01.nfo
-    if ($BaseName -match $artPrefixedRegex) { return $true }   # AAA-poster.jpg
-    return $false
-}
+# 附属文件白名单与 Test-ArtBaseName 已移至 common.ps1
 
 # v5.14：统一长名截断函数（默认 maxWidth 33，适配统一列宽 35）
     # 参数：$name 文件名，$maxWidth 最大显示宽度（中文/全角算2，英文算1）
