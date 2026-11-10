@@ -33,7 +33,7 @@ v4.0：全面重写，对齐整套工具的 UI 规范与 nfo 写入安全规范�
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "common\common.ps1")
 
 # ========== 配置 ==========
 # 视频/附属文件扩展名已移至 common.ps1

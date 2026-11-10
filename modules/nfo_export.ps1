@@ -37,7 +37,7 @@ param(
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "common\common.ps1")
 
 # ========== 配置 ==========
 $videoExtsPattern = @("*.mp4","*.mov","*.mkv","*.avi","*.flv","*.wmv","*.m4v","*.ts",

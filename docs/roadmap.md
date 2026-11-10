@@ -18,14 +18,16 @@
 
 ## 二、下一阶段优先做
 
-### 1. 抽 `modules\common.ps1`（技术债）
+### 1. 抽 `modules\common\common.ps1`（技术债，进行中）
 
 目的：减少 `Test-ArtBaseName`、`Get-DisplayWidth`、`PadTo`、`Format-TruncatedName`、`Show-MenuTitle` 在多模块重复。
 
-- `ui.ps1` 保持“显示 / 交互”：配色、菜单、清屏、分隔线、表格格式化、`Show-MenuTitle`
-- `common.ps1` 放“业务公共逻辑”：`Test-ArtBaseName`、附属文件白名单、`$videoExts`、UNC/长路径归一化、`.bak` 备份/删除/还原
+- `modules\ui\ui.ps1` 保持“显示 / 交互”：配色、菜单、清屏、分隔线、`Get-DisplayWidth`、`PadTo`、`Show-MenuTitle`
+- `modules\common\common.ps1` 放“业务公共逻辑”：`Test-ArtBaseName`、附属文件白名单、`$videoExts`、`Get-NfoEncoding`、`Format-SafeXmlTitle`
 - 原则：common 不依赖 ui，两者只定义函数/常量，无副作用
-- `modules\ui\` 子文件夹暂时保留，不移动 `ui.ps1`，避免改所有 dot-source 路径
+- `modules\` 一级只放业务工具脚本，公共库进 `common\` / `ui\` 子文件夹
+- 已完成（2026-11-11）：扩展名/白名单/`Test-ArtBaseName`/`Get-DisplayWidth`/`PadTo`/`Show-MenuTitle`/编码探测/XML 转义
+- 未完成：`.bak` 备份/删除/还原、UNC/长路径归一化；`Format-TruncatedName` 各模块默认宽度不同，暂不合并
 
 注意：抽取会动 `time_add` / `time_clear` / `nfo_sync_clean` 三处白名单逻辑，必须逐项回归。
 

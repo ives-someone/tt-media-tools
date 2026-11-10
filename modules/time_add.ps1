@@ -178,7 +178,7 @@ v5.35：ffprobe 并发调度重构——与外部 ffprobe 进程解耦。
 
 # ========== 加载公共 UI 框架 ==========
 . (Join-Path $PSScriptRoot "ui\ui.ps1")
-. (Join-Path $PSScriptRoot "common.ps1")
+. (Join-Path $PSScriptRoot "common\common.ps1")
 
 # ========== 工具函数 ==========
 function Wait-AnyKey {
