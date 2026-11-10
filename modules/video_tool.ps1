@@ -10,6 +10,8 @@ v1.4（2026-11-09）：转码编码菜单增加「一键按上次」，默认选
        QSV 检测结果缓存进 config.env，打开工具不再重复试编码。
 v1.5（2026-11-09）：并发转码恢复进度显示——用 -progress 文件解析
        各任务的百分比与倍速，单行汇总刷新，两个任务都能看到进度。
+v1.6（2026-11-10）：转码新增帧率选项（保持原帧率 / 自定义 1~120 fps）；
+       合并帧率不兼容提示改为明确说明“无损拼接可能音画不同步”。
     合并：多段首尾拼接，无损 copy 优先，参数不一致时改有损重编码。
     转码：逐个文件按预设重编码，与合并共用 QSV / CRF 参数体系。
 
@@ -143,6 +145,7 @@ function Get-DefaultConfig {
     # 老配置文件只有 merge 段时，Import-ToolConfig 会让 transcode 继承 merge。
     $transcode = New-EncodingDefaults
     $transcode['outputMode'] = 'subfolder'
+    $transcode['frameRate'] = 0
     return [ordered]@{
         merge     = New-EncodingDefaults
         transcode = $transcode
@@ -200,6 +203,14 @@ function Merge-EncodingSection {
 
     $v = & $checkInt $Source.audioBitrateKbps 64 512
     if ($null -ne $v) { $Target['audioBitrateKbps'] = $v }
+
+    if ($Target.Contains('frameRate') -and $null -ne $Source.frameRate) {
+        $fr = 0.0
+        $frOk = [double]::TryParse([string]$Source.frameRate, [System.Globalization.NumberStyles]::Float,
+            [System.Globalization.CultureInfo]::InvariantCulture, [ref]$fr)
+        if ($frOk -and $fr -ge 0 -and $fr -le 120) { $Target['frameRate'] = $fr }
+        else { $script:ConfigWarnings.Add("${prefix}frameRate 超出 0~120，已忽略：$($Source.frameRate)") }
+    }
 }
 
 function Save-ToolConfig {
@@ -769,7 +780,7 @@ function Get-Compatibility {
         }
         if ($first.Fps -gt 0 -and $cur.Fps -gt 0 -and
             [math]::Abs($cur.Fps - $first.Fps) -gt 0.01 -and -not $seen['fps']) {
-            $reasons.Add("帧率不同：$([math]::Round($first.Fps,3)) / $([math]::Round($cur.Fps,3)) fps（$name）"); $seen['fps'] = $true
+            $reasons.Add("帧率不同：$([math]::Round($first.Fps,3)) / $([math]::Round($cur.Fps,3)) fps（$name；无损拼接可能音画不同步，已改用有损统一帧率）"); $seen['fps'] = $true
         }
         if ($cur.HasAudio -ne $first.HasAudio -and -not $seen['audioPresence']) {
             $reasons.Add('音轨有无不一致：部分视频没有音频轨'); $seen['audioPresence'] = $true
@@ -1291,6 +1302,7 @@ function New-SettingsFromConfig {
         QsvPreset = $cfg['qsvPreset']
         CpuPreset = $cfg['cpuPreset']
         AudioKbps = [int]$cfg['audioBitrateKbps']
+        FrameRate = [double]$cfg['frameRate']
     }
 }
 
@@ -1309,7 +1321,8 @@ function Read-ReencodeSettings {
     if ($AllowQuickLast) {
         $lastSettings = New-SettingsFromConfig -Config $Config -Section $Section
         $lastText = Get-RateModeText -Settings $lastSettings
-        $quickLabel = "[1] 一键按上次（$lastText · $OutputLabel）"
+        $lastFrameText = if ([double]$lastSettings.FrameRate -gt 0) { "$($lastSettings.FrameRate) fps" } else { '原帧率' }
+        $quickLabel = "[1] 一键按上次（$lastText · $lastFrameText · $OutputLabel）"
         $codecOpts = @(
             @{ Label = $quickLabel; Value = 'last' }
             @{ Label = '[2] H.265（画质优先）'; Value = 'hevc' }
@@ -1379,12 +1392,33 @@ function Read-ReencodeSettings {
         }
     }
 
+    # ---- 选单5：帧率（仅转码） ----
+    $frameRate = 0
+    if ($Section -eq 'transcode') {
+        Show-MenuTitle '帧率'
+        $curFrame = [double]$cfg['frameRate']
+        $frameDefault = if ($curFrame -gt 0) { 1 } else { 0 }
+        $frameOpts = @(
+            @{ Label = '[0]保持原帧率（默认）'; Value = 0 }
+            @{ Label = '[1]自定义帧率'; Value = 1 }
+            @{ Label = '[q]取消'; Value = 'cancel' }
+        )
+        $framePick = Select-Horizontal -Options $frameOpts -Prompt '' -InitialIndex $frameDefault
+        if ($null -eq $framePick -or $framePick -eq 'cancel') { return $null }
+
+        if ($framePick -eq 1) {
+            $frameDefaultValue = if ($curFrame -gt 0) { $curFrame } else { 30 }
+            $frameRate = Read-NumberInput -Prompt "请输入目标帧率（建议 30，1~120，回车默认 $frameDefaultValue）" -Min 1 -Max 120 -Default $frameDefaultValue -AllowDecimal
+        }
+    }
+
     # 记住本次选择，下次作为默认值
     $cfg['codec'] = $codecPick
     $cfg['rateMode'] = $rateMode
     $cfg['icq'] = $icq
     $cfg['cbrMbps'] = $cbr
     $cfg['crf'] = $crf
+    if ($Section -eq 'transcode') { $cfg['frameRate'] = $frameRate }
     [void](Save-ToolConfig -Config $Config)
 
     return [PSCustomObject]@{
@@ -1396,6 +1430,7 @@ function Read-ReencodeSettings {
         QsvPreset  = $cfg['qsvPreset']
         CpuPreset  = $cfg['cpuPreset']
         AudioKbps  = $cfg['audioBitrateKbps']
+        FrameRate  = [double]$frameRate
     }
 }
 
@@ -1877,6 +1912,9 @@ function Get-TranscodeArguments {
     # QSV 原生只吃 nv12，传 yuv420p 会触发「auto-selecting format」告警
     $pixFmt = if (($encArgs -join ' ') -match '_qsv') { 'nv12' } else { 'yuv420p' }
     $argv += @('-pix_fmt', $pixFmt)
+    if ($null -ne $Settings.FrameRate -and [double]$Settings.FrameRate -gt 0) {
+        $argv += @('-r', [string]$Settings.FrameRate)
+    }
     if ($Info.HasAudio) {
         if ($Info.ACodec -eq 'aac') { $argv += @('-c:a','copy') }
         else { $argv += @('-c:a','aac','-b:a',"$($Settings.AudioKbps)k") }
@@ -2186,7 +2224,8 @@ function Invoke-TranscodeWorkflow {
     Write-Host "  $(col_a_title '转码摘要')"
     Write-Host "  $(col_a_line (sep))"
     Write-Host "  $(col_a_text_muted '编码：')$(col_a_text (Get-RateModeText -Settings $settings))"
-    Write-Host "  $(col_a_text_muted '规格：')$(col_a_text '保持原分辨率与帧率')$(col_a_text_muted '（统一 8-bit yuv420p）')"
+        $frameLabel = if ($null -ne $settings.FrameRate -and [double]$settings.FrameRate -gt 0) { "$($settings.FrameRate) fps" } else { '保持原帧率' }
+    Write-Host "  $(col_a_text_muted '规格：')$(col_a_text "保持原分辨率 · 帧率 $frameLabel")$(col_a_text_muted '（统一 8-bit yuv420p）')"
     Write-Host "  $(col_a_text_muted '音频：')$(col_a_text "AAC $($settings.AudioKbps) kbps")$(col_a_text_muted '（AAC 源直接复制，其余转 AAC）')"
     Write-Host "  $(col_a_text_muted '输出：')$(col_a_text $outLabel)"
     Write-Host
