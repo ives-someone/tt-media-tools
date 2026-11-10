@@ -6,6 +6,53 @@
 
 ---
 
+## v6.4 — 2026-11-11
+
+### 一句话概括
+
+抽取 common/ui 公共库、统一编码规范、修复 top_finder 在 PowerShell 5.1 下的中文乱码；无功能行为变化。
+
+---
+
+### 新增
+
+| # | 模块 | 内容 |
+|---|---|---|
+| 1 | `common` | **新建 `modules\common\common.ps1`** —— 业务公共逻辑：视频/附属文件扩展名、词干白名单、`Test-ArtBaseName`、`Get-NfoEncoding`、`Format-SafeXmlTitle` |
+| 2 | `ui` | **公共显示函数** —— `Get-DisplayWidth`、`PadTo`、`Show-MenuTitle` 由各模块迁入 `ui.ps1` 统一提供 |
+
+---
+
+### 变更
+
+| # | 内容 | 说明 |
+|---|---|---|
+| 1 | 白名单统一 | `time_add` / `time_clear` / `nfo_sync_clean` / `nfo_export` 删除本地白名单与 `Test-ArtBaseName`，统一 dot-source `common.ps1` |
+| 2 | 显示函数统一 | 7 个模块删除重复 `Get-DisplayWidth`，5 个删除 `PadTo`，2 个删除 `Show-MenuTitle` |
+| 3 | 编码修复 | `top_finder.ps1` 补 UTF-8 BOM，修复 PowerShell 5.1 下中文乱码 |
+| 4 | 编码规范 | `.md` / `.txt` 含中文统一 UTF-8 带 BOM + CRLF；`UI规范.md` 混合换行修正；`.bat` 保持无 BOM |
+| 5 | 目录结构 | `modules\` 一级只保留业务工具脚本，公共库进 `common\` / `ui\` |
+| 6 | 文档 | `roadmap.md` 移出仓库，改为本地维护（`.gitignore` 忽略） |
+
+---
+
+### 模块版本对照表（v6.4）
+
+| 模块 | 版本 | 行数 | 状态 |
+|---|---|---|---|
+| `modules\common\common.ps1` | v1.0 | 120 | ✅ |
+| `modules\ui\ui.ps1` | v7.1 | 778 | ✅ |
+| `modules\time_add.ps1` | v5.35 | 1606 | ✅ |
+| `modules\time_clear.ps1` | v1.0 | 861 | ✅ |
+| `modules\nfo_sync_clean.ps1` | v5.0 | 531 | ✅ |
+| `modules\nfo_export.ps1` | v3.0 | 469 | ✅ |
+| `modules\top_finder.ps1` | v22.6 | 1505 | ✅ |
+| `modules\video_tool.ps1` | v1.8 | 2426 | ✅ |
+| `modules\cn_to_arabic.ps1` | v2.0 | 280 | ✅ |
+| `modules\ext_lower.ps1` | v2.0 | 273 | ✅ |
+| `modules\lnk_replace.ps1` | v2.0 | 401 | ✅ |
+
+---
 ## v6.3 — 2026-11-10
 
 ### 一句话概括
