@@ -1784,6 +1784,7 @@ function Invoke-MergeWorkflow {
 
                 Write-Host
                 Write-Host "  $(col_a_title '开始合并')"
+                Write-Host "  $(col_a_text_muted '合并中可按 ')$(col_a_text '[p]')$(col_a_text_muted ' 暂停 / 继续')"
                 Write-Host
 
                 $result = Invoke-LosslessMerge -Infos $infos -OutPath $outPath -TempDir $tempDir -OutExt $outExt
@@ -1860,6 +1861,7 @@ function Invoke-MergeWorkflow {
 
             Write-Host
             Write-Host "  $(col_a_title '开始合并（有损重新编码，耗时较长）')"
+            Write-Host "  $(col_a_text_muted '合并中可按 ')$(col_a_text '[p]')$(col_a_text_muted ' 暂停 / 继续')"
             Write-Host
 
             $result = Invoke-ReencodeMerge -Infos $infos -OutPath $outPath -TempDir $tempDir -OutExt $outExt -Settings $settings -Spec $spec
@@ -2307,6 +2309,7 @@ function Invoke-TranscodeWorkflow {
 
     Write-Host
     Write-Host "  $(col_a_title '开始转码（≤1080p 双任务滚动补位，2K/4K 独占）')"
+    Write-Host "  $(col_a_text_muted '转码中可按 ')$(col_a_text '[p]')$(col_a_text_muted ' 暂停 / 继续（同时作用于当前运行的任务）')"
     Write-Host
 
     $outputs = @()
