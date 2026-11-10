@@ -1,7 +1,8 @@
 ﻿# TT_Media_Tools 后续方向（Roadmap）
 
-> 更新时间：2026-11-10
+> 更新时间：2026-11-11
 > 当前版本：v6.3（tag `7239901`）
+> 工作区状态：已完成 common/ui 公共库重构（6 个提交，本地未推送、未发版）
 > 用途：新会话接续时先读本文件，避免重复讨论方向。
 
 ---
@@ -12,24 +13,25 @@
 - 视频工具：无损 / 有损合并、批量转码、QSV 优先、`p` 暂停、任务池并发（短边 ≤1500 双开、4K 独占）、并发进度、帧率自定义、一键按上次、QSV 检测缓存
 - NFO：Emby 自动生成 nfo 的 title/sorttitle 同步；无同名视频的 nfo / 图片清理（默认跳过、`.bak`、可撤销）
 - 环境：`install.bat` 解锁脚本、检测 ffmpeg/ffprobe、tools 目录自动配 PATH
+- 公共库：`modules\common\common.ps1`（业务：白名单/判定/编码/转义）、`modules\ui\`（显示/交互）；业务模块只 dot-source，不重复定义
 - 已发布：v6.0、v6.1、v6.1.1、v6.2、v6.3
 
 ---
 
 ## 二、下一阶段优先做
 
-### 1. 抽 `modules\common\common.ps1`（技术债，进行中）
+### 1. 抽 `modules\common\common.ps1`（技术债，主体已完成）
 
-目的：减少 `Test-ArtBaseName`、`Get-DisplayWidth`、`PadTo`、`Format-TruncatedName`、`Show-MenuTitle` 在多模块重复。
+目的：减少 `Test-ArtBaseName`、`Get-DisplayWidth`、`PadTo`、`Show-MenuTitle` 在多模块重复（`Format-TruncatedName` 各模块默认宽度不同，本期暂不合并）。
 
 - `modules\ui\ui.ps1` 保持“显示 / 交互”：配色、菜单、清屏、分隔线、`Get-DisplayWidth`、`PadTo`、`Show-MenuTitle`
 - `modules\common\common.ps1` 放“业务公共逻辑”：`Test-ArtBaseName`、附属文件白名单、`$videoExts`、`Get-NfoEncoding`、`Format-SafeXmlTitle`
 - 原则：common 不依赖 ui，两者只定义函数/常量，无副作用
 - `modules\` 一级只放业务工具脚本，公共库进 `common\` / `ui\` 子文件夹
-- 已完成（2026-11-11）：扩展名/白名单/`Test-ArtBaseName`/`Get-DisplayWidth`/`PadTo`/`Show-MenuTitle`/编码探测/XML 转义
-- 未完成：`.bak` 备份/删除/还原、UNC/长路径归一化；`Format-TruncatedName` 各模块默认宽度不同，暂不合并
+- 已完成（2026-11-11）：扩展名/白名单/`Test-ArtBaseName`（time_add、time_clear、nfo_sync_clean、nfo_export 四处统一）；`Get-DisplayWidth`（7 处）、`PadTo`（5 处）、`Show-MenuTitle`（2 处）统一进 ui.ps1；编码探测/XML 转义统一进 common.ps1；`.md/.txt` 编码规范统一
+- 未完成：`.bak` 备份/删除/还原（3 模块共 15 处调用点）、UNC/长路径归一化
 
-注意：抽取会动 `time_add` / `time_clear` / `nfo_sync_clean` 三处白名单逻辑，必须逐项回归。
+注意：抽取已动 `time_add` / `time_clear` / `nfo_sync_clean` / `nfo_export` 四处白名单逻辑，已做语法检查 + 等价性测试 + PS 5.1/7 冒烟。
 
 ### 2. `top_finder` 增加“重复候选清单”
 
@@ -43,6 +45,8 @@
 - 入口：结果页增加 `[d] 查找重复候选`
 
 ### 3. 版本检查
+
+> 说明：v6.3 后曾试做一版（已回滚），当前代码里没有版本检查，需按下列条目重做。
 
 - `tt.ps1` 启动时可选检查 GitHub Releases 最新 tag
 - 超时 2–3 秒，失败静默，不阻塞启动
@@ -76,6 +80,7 @@
 
 - UI：所有显示行行首两格缩进；标题 `col_a_title`、分隔线 60 个 `=`；菜单不设“退出”项；`q/Esc` 语义见 `UI规范.md`
 - 编码：`.ps1` / `.md` / `.txt` 含中文时统一 UTF-8 **带 BOM** + CRLF（避免 Windows 记事本 / 命令行按 ANSI 误判乱码）；`.bat` 保持 UTF-8 无 BOM（cmd 不识别 BOM，加了会报错）
+- 公共库：业务公共逻辑进 `modules\common\common.ps1`，显示/交互进 `modules\ui\`；业务模块只 dot-source，不重复定义
 - 交互：`Arrow-Menu` 竖向、`Select-Horizontal` 横向；数字 / 字母直达；底部提示统一 `[q/Esc]`
 - 安全：删除类默认跳过、删除前 `.bak`、能撤销就提供撤销
 - 测试：改动后至少做语法检查 + 代表性小样本测试；涉及 ffmpeg 的功能用短视频样本验证输出时长/分辨率
