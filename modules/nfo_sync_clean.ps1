@@ -56,6 +56,15 @@ function Test-ArtBaseName {
     return $false
 }
 
+# 菜单标题（ui.ps1 没有提供，video_tool 里也是各自定义）
+function Show-MenuTitle {
+    param([string]$Title)
+    Write-Host
+    Write-Host "  $(col_a_title $Title)"
+    Write-Host "  $(col_a_line (sep))"
+    Write-Host
+}
+
 # ========== 孤立文件清理（复用 time_clear 的口径：nfo + 图片） ==========
 function Invoke-OrphanCleanup {
     $allFiles = Get-ChildItem -File
