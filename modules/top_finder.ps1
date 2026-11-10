@@ -1,4 +1,4 @@
-﻿<#
+<#
 top_finder.ps1
 变更要点：
 1. D模式：主排序按时长，保留全局预读全部时长
@@ -1013,7 +1013,7 @@ if (-not $skipRecurseAndFormat) {
         '[n]仅当前文件夹'
     )
     $recursePick = Select-Vertical -Labels $recurseLabels -Default 0 -Title '扫描范围'
-    if ($recursePick -lt 0) { continue RESTART }
+    if ($recursePick -lt 0) { exit 0 }
     $recurseValues = @(
         'yes'
         'no'

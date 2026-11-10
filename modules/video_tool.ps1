@@ -1322,11 +1322,13 @@ function Read-ReencodeSettings {
         $lastSettings = New-SettingsFromConfig -Config $Config -Section $Section
         $lastText = Get-RateModeText -Settings $lastSettings
         $lastFrameText = if ([double]$lastSettings.FrameRate -gt 0) { "$($lastSettings.FrameRate) fps" } else { '原帧率' }
-        $quickLabel = "[1] 一键按上次（$lastText · $lastFrameText · $OutputLabel）"
+        # 摘要单独一行放标题下方，避免选项行过长折行
+        Write-Host "  $(col_a_text_muted '上次编码选项：')$(col_a_text "$lastText · $lastFrameText · $OutputLabel")"
+        Write-Host ""
         $codecOpts = @(
-            @{ Label = $quickLabel; Value = 'last' }
-            @{ Label = '[2] H.265（画质优先）'; Value = 'hevc' }
-            @{ Label = '[3] H.264（兼容优先）'; Value = 'h264' }
+            @{ Label = '[1]一键按上次'; Value = 'last' }
+            @{ Label = '[2]H.265（画质优先）'; Value = 'hevc' }
+            @{ Label = '[3]H.264（兼容优先）'; Value = 'h264' }
             @{ Label = '[q]取消'; Value = 'cancel' }
         )
         $codecDefault = 0
