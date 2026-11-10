@@ -1444,7 +1444,7 @@ try {
 
                     $modified = $false
                     # v5.23：兼容带属性，无则追加（确保真实覆盖）
-                    $safeTitle = [System.Security.SecurityElement]::Escape($item.nfoNewTitle).Replace('$', '$$')
+                    $safeTitle = Format-SafeXmlTitle -Title $item.nfoNewTitle
 
                     # v5.33：根节点探测——movie / episodedetails / tvshow 三类，追加时插到根节点闭合标签之前
                     # 找不到已知根节点时 $rootTag = $null，退化为直接追加到文件末尾（保持旧行为）

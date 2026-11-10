@@ -72,3 +72,49 @@ function Test-ArtBaseName {
     if ($BaseName -match $artPrefixedRegex) { return $true }   # AAA-poster.jpg
     return $false
 }
+
+# ========== nfo 编码探测 ==========
+# 返回 Encoding；无 BOM 且非合法 UTF-8 时尝试 GB18030；
+# 系统缺少 GB18030 代码页时返回 $null，调用方据此跳过该文件，绝不用错误编码写盘。
+# 无 BOM 的 UTF-16 用 XML 首字节 "<"（0x3C）判别，避免把 UTF-16 nfo 当 UTF-8/GBK 解码。
+function Get-NfoEncoding {
+    param([byte[]]$Bytes)
+
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
+        return [System.Text.Encoding]::Unicode
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
+        return [System.Text.Encoding]::BigEndianUnicode
+    }
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        return (New-Object System.Text.UTF8Encoding($true))
+    }
+
+    # 无 BOM 的 UTF-16：XML 首字节是 0x3C（"<"），其后跟 0x00
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0x3C -and $Bytes[1] -eq 0x00) {
+        return [System.Text.Encoding]::Unicode
+    }
+    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0x00 -and $Bytes[1] -eq 0x3C) {
+        return [System.Text.Encoding]::BigEndianUnicode
+    }
+
+    try {
+        $strict = New-Object System.Text.UTF8Encoding($false, $true)
+        $null = $strict.GetString($Bytes)
+        return (New-Object System.Text.UTF8Encoding($false))
+    } catch {
+        try {
+            return [System.Text.Encoding]::GetEncoding(936)
+        } catch {
+            return $null
+        }
+    }
+}
+
+# ========== XML 标题转义 ==========
+# SecurityElement::Escape 处理 & < > " '，再把 $ 替换为 $$，
+# 防止后续 -replace 把 $ 当作分组引用吞字符。
+function Format-SafeXmlTitle {
+    param([string]$Title)
+    return [System.Security.SecurityElement]::Escape($Title).Replace('$', '$$')
+}
