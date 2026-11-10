@@ -200,7 +200,7 @@ while ($true) {
     $mainOptions = @(
         "[1]视频提取时长并重命名添加",
         "[2]识别文件名内视频时长文字并按多种需求清理",
-        "[3]NFO同步：刷新同步与视频同名的NFO文件内部名称",
+        "[3]Emby nfo同步与孤立文件清理",
         "[4]递归扫描NFO，提取信息导出CSV，便于筛查排序",
         "[5]TOP XX 的视频/文件查找和输出_新版双模式",
         "[6]视频合并 / 转码工具（支持无损快速合并）",
@@ -234,7 +234,7 @@ while ($true) {
     switch ($sel) {
         0 { Invoke-Module "time_add.ps1" }      # 选项1：视频时长提取 + 重命名
         1 { Invoke-Module "time_clear.ps1" }    # 选项2：清理时长文件名
-        2 { Invoke-Module "nfo_title.ps1" }     # 选项3：NFO 同步
+        2 { Invoke-Module "nfo_sync_clean.ps1" }  # 选项3：Emby nfo 同步与孤立清理
         3 { Invoke-Module "nfo_export.ps1" }    # 选项4：NFO 导出 CSV
         4 { Invoke-Module "top_finder.ps1" }    # 选项5：TOP XX 查找
         5 { Invoke-Module "video_tool.ps1" }    # 选项6：视频合并 / 转码

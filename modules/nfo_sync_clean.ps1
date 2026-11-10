@@ -1,5 +1,9 @@
 ﻿<#
-nfo_title.ps1
+nfo_sync_clean.ps1
+v5.0：在 nfo_title v4.0 基础上改为「Emby nfo 同步与孤立文件清理」：
+    1. 主菜单拆成 [1] NFO 同步 / [2] 孤立文件清理；
+    2. 孤立清理复用 time_clear 的口径，同时处理孤立 nfo 与孤立图片；
+    3. 清理默认跳过，删除前生成 .bak，清理后可撤销。
 v4.0：全面重写，对齐整套工具的 UI 规范与 nfo 写入安全规范。
 
 【本版保留的原有行为】
@@ -50,6 +54,126 @@ function Test-ArtBaseName {
     if ($BaseName -match $metaBareRegex)    { return $true }
     if ($BaseName -match $artPrefixedRegex) { return $true }
     return $false
+}
+
+# ========== 孤立文件清理（复用 time_clear 的口径：nfo + 图片） ==========
+function Invoke-OrphanCleanup {
+    $allFiles = Get-ChildItem -File
+    $videoBases = @($allFiles | Where-Object {
+        $videoExts -contains $_.Extension.TrimStart('.').ToLower()
+    } | ForEach-Object { $_.BaseName })
+
+    $orphanNfos = @($allFiles | Where-Object {
+        $_.Extension.ToLower() -eq '.nfo' -and
+        -not (Test-ArtBaseName -BaseName $_.BaseName) -and
+        ($videoBases -notcontains $_.BaseName)
+    })
+
+    $imageExts = @('.jpg', '.jpeg', '.png', '.webp')
+    $orphanImgs = @($allFiles | Where-Object {
+        $imageExts -contains $_.Extension.ToLower() -and
+        -not (Test-ArtBaseName -BaseName $_.BaseName) -and
+        ($videoBases -notcontains $_.BaseName)
+    })
+
+    $deleted = @()
+    $total = $orphanNfos.Count + $orphanImgs.Count
+    if ($total -eq 0) {
+        Write-Host "  $(col_a_success '✅  未发现孤立 nfo 或图片。')"
+        return
+    }
+
+    $bw = 36
+    $hLine = "─" * ($bw - 2)
+    Write-Host "  $(col_a_error ('┌' + $hLine + '┐'))"
+    Write-Host "  $(col_a_error ('│   发现孤立文件，是否清理删除？   │'))"
+    Write-Host "  $(col_a_error ('└' + $hLine + '┘'))"
+    Write-Host ""
+
+    if ($orphanNfos.Count -gt 0) {
+        Write-Host "  $(col_a_warning "⚠  发现 $($orphanNfos.Count) 个孤立 nfo（无同名视频）：")"
+        foreach ($o in $orphanNfos) { Write-Host "  📄 $($o.FullName)" }
+        Write-Host ""
+        Write-Host "  $(col_a_text ('孤立 nfo 清理：'))"
+        Write-Host "  $(col_a_line (sep_weak))"
+
+        $opts = @(
+            @{ Label = '[d]删除并备份'; Value = 'clean' }
+            @{ Label = '[s]跳过'; Value = 'skip' }
+            @{ Label = '[q/Esc]返回'; Value = 'back' }
+        )
+        $pick = Select-Horizontal -Options $opts -Prompt '' -InitialIndex 1
+        if ($null -eq $pick -or $pick -eq 'back') { return }
+
+        if ($pick -eq 'clean') {
+            foreach ($o in $orphanNfos) {
+                try {
+                    $bak = $o.FullName + '.bak'
+                    [System.IO.File]::Copy($o.FullName, $bak, $true)
+                    [System.IO.File]::Delete($o.FullName)
+                    $deleted += [PSCustomObject]@{ FilePath = $o.FullName; BakPath = $bak }
+                    Write-Host "  $(col_a_success "🗑 $($o.Name) | 已删除（备份：$bak）")"
+                } catch {
+                    Write-Host "  $(col_a_error "❌ $($o.Name) | 清理失败：$_")"
+                }
+            }
+        }
+    }
+
+    if ($orphanImgs.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  $(col_a_warning "⚠  发现 $($orphanImgs.Count) 个孤立图片（无同名视频）：")"
+        foreach ($o in $orphanImgs) { Write-Host "  🖼  $($o.FullName)" }
+        Write-Host ""
+        Write-Host "  $(col_a_text ('孤立图片清理：'))"
+        Write-Host "  $(col_a_line (sep_weak))"
+
+        $opts = @(
+            @{ Label = '[d]删除并备份'; Value = 'clean' }
+            @{ Label = '[s]跳过'; Value = 'skip' }
+            @{ Label = '[q/Esc]返回'; Value = 'back' }
+        )
+        $pick = Select-Horizontal -Options $opts -Prompt '' -InitialIndex 1
+        if ($null -eq $pick -or $pick -eq 'back') { return }
+
+        if ($pick -eq 'clean') {
+            foreach ($o in $orphanImgs) {
+                try {
+                    $bak = $o.FullName + '.bak'
+                    [System.IO.File]::Copy($o.FullName, $bak, $true)
+                    [System.IO.File]::Delete($o.FullName)
+                    $deleted += [PSCustomObject]@{ FilePath = $o.FullName; BakPath = $bak }
+                    Write-Host "  $(col_a_success "🗑 $($o.Name) | 已删除（备份：$bak）")"
+                } catch {
+                    Write-Host "  $(col_a_error "❌ $($o.Name) | 清理失败：$_")"
+                }
+            }
+        }
+    }
+
+    if ($deleted.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  $(col_a_text ('清理完成，可撤销：'))"
+        $undoOpts = @(
+            @{ Label = '[u]撤销本次删除'; Value = 'undo' }
+            @{ Label = '[q/Esc]保留删除结果'; Value = 'keep' }
+        )
+        $undo = Select-Horizontal -Options $undoOpts -Prompt '' -InitialIndex 0
+        if ($undo -eq 'undo') {
+            $ok = 0
+            foreach ($d in $deleted) {
+                try {
+                    Copy-Item -LiteralPath $d.BakPath -Destination $d.FilePath -Force
+                    Remove-Item -LiteralPath $d.BakPath -Force -ErrorAction SilentlyContinue
+                    Write-Host "  $(col_a_success "↩ $($d.FilePath) | 已还原")"
+                    $ok++
+                } catch {
+                    Write-Host "  $(col_a_error "❌ $($d.FilePath) | 还原失败：$_")"
+                }
+            }
+            Write-Host "  $(col_a_success "✅  已还原 $ok 个文件")"
+        }
+    }
 }
 
 # ========== 表格格式化 ==========
@@ -147,14 +271,29 @@ while ($true) {
         $cwdDisplay = $cwdDisplay.Substring(0, 38) + '…' + $cwdDisplay.Substring($cwdDisplay.Length - 38)
     }
 
-    Write-Host "  $(col_a_title ('nfo_title.ps1 — NFO 内部名称同步与清理'))"
+    Write-Host "  $(col_a_title ('nfo_sync_clean.ps1 — Emby nfo 同步与孤立文件清理'))"
     Write-Host "  $(col_a_line (sep))"
     Write-Host ""
     Write-Host "  $(col_a_text_muted '处理目录：')$(col_a_text $cwdDisplay)"
     Write-Host ""
     Write-Host "  $(col_a_text_muted '把与视频同名的 nfo 内部 <title>/<sorttitle> 刷新为视频文件名（不含扩展名）')"
-    Write-Host "  $(col_a_text_muted '仅处理已存在的标签，不新增；只在标签存在时改写，避免破坏原有 nfo 结构')"
+    Write-Host "  $(col_a_text_muted '孤立清理：删除无同名视频的 nfo / 图片，默认跳过，删除前生成 .bak')"
     Write-Host ""
+
+    Show-MenuTitle '功能选择'
+    $funcOpts = @(
+        @{ Label = '[1] NFO 同步（刷新同名 nfo 的 title / sorttitle）'; Value = 'sync' }
+        @{ Label = '[2] 孤立文件清理（无同名视频的 nfo / 图片）'; Value = 'orphan' }
+        @{ Label = '[q] 返回主菜单'; Value = 'exit' }
+    )
+    $func = Select-Horizontal -Options $funcOpts -Prompt '' -InitialIndex 0
+    if ($null -eq $func -or $func -eq 'exit') { return }
+
+    if ($func -eq 'orphan') {
+        Invoke-OrphanCleanup
+        Wait-AnyKey "  按任意键返回..."
+        continue
+    }
 
     # ---- 扫描配对 ----
     $allFiles  = Get-ChildItem -File
@@ -197,59 +336,6 @@ while ($true) {
         Write-Host "  $(col_a_warning ('⚠  当前目录没有找到【视频 + 同名 nfo】配对。'))"
         Wait-AnyKey
         exit 0
-    }
-
-    # ---- 孤立 nfo 检测（对齐 time_add/time_clear 的白名单口径）----
-    $allNfoFiles = $allFiles | Where-Object { $_.Extension.ToLower() -eq '.nfo' }
-    $pairedNames = $workItems | ForEach-Object { $_.NfoFile }
-    $orphanNfos  = @()
-
-    foreach ($nfo in $allNfoFiles) {
-        if ($pairedNames -contains $nfo.Name) { continue }
-        if (Test-ArtBaseName -BaseName $nfo.BaseName) { continue }
-        $orphanNfos += $nfo
-    }
-
-    if ($orphanNfos.Count -eq 0) {
-        Write-Host "  $(col_a_success '✅  未发现孤立 nfo 文件。')"
-    }
-    else {
-        Write-Host ""
-        Write-Host "  $(col_a_warning "⚠  发现 $($orphanNfos.Count) 个孤立 nfo（无同名视频）：")"
-        Write-Host ""
-        foreach ($o in $orphanNfos) { Write-Host "  📄 $($o.FullName)" }
-        Write-Host ""
-        Write-Host "  $(col_a_text ('孤立 nfo 清理：'))"
-        Write-Host "  $(col_a_line (sep_weak))"
-
-        $orphanOpts = @(
-            @{ Label = "[d]删除并备份"; Value = "clean" }
-            @{ Label = "[s]跳过"; Value = "skip" }
-            @{ Label = "[q/Esc]重新开始"; Value = "restart" }
-        )
-        $orphanResult = Select-Horizontal -Options $orphanOpts -Prompt "" -InitialIndex 1
-        if ($null -eq $orphanResult -or $orphanResult -eq 'restart') { exit 0 }
-
-        if ($orphanResult -eq 'clean') {
-            Write-Host ""
-            $okCount = 0
-            foreach ($o in $orphanNfos) {
-                try {
-                    $bakPath = $o.FullName + ".bak"
-                    [System.IO.File]::Copy($o.FullName, $bakPath, $true)
-                    [System.IO.File]::Delete($o.FullName)
-                    Write-Host "  $(col_a_success "🗑 $($o.Name) | 已删除（备份：$bakPath）")"
-                    $okCount++
-                } catch {
-                    Write-Host "  $(col_a_error "❌ $($o.Name) | 清理失败：$_")"
-                }
-            }
-            Write-Host ""
-            Write-Host "  $(col_a_success "✅  已清理 $okCount 个孤立 nfo（均生成 .bak 备份）")"
-        }
-        else {
-            Write-Host "  $(col_a_text_muted ('⚪  已跳过孤立 nfo 清理。'))"
-        }
     }
 
     # ---- 预览表 ----
@@ -494,5 +580,5 @@ while ($true) {
         Wait-AnyKey "  $(col_a_text_muted '按任意键返回菜单...')"
     }
 
-    return
+    continue
 }
